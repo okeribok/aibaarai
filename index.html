@@ -1,0 +1,3597 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AIbaarAI RAG en document generator v2.1</title>
+  <!--
+    Required files (next to index.html): marked.min.js
+    Optional: transformers.min.js, mermaid.min.js
+    Optional upload: thesaurus.md, template.md
+  -->
+  <script src="marked.min.js"></script>
+  <script src="mermaid.min.js" onerror="console.info('mermaid not found')"></script>
+  <style>
+    :root {
+      --bg:#f9f9f9; --pane-bg:#fff; --text:#222; --border:#d0d0d0;
+      --muted:#777; --primary:#0056b3; --hl:#ffe066;
+      --user-msg:#eef4fc; --sys-msg:#f4f4f4;
+      --sans:'Segoe UI',Roboto,Helvetica,Arial,sans-serif; --mono:Consolas,monospace;
+    }
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    html,body{height:100%;font-family:var(--sans);color:var(--text);background:var(--bg);overflow:hidden}
+
+    /* ── Dialog ── */
+    dialog{border:none;padding:0;background:transparent;max-width:none;margin:auto}
+    dialog::backdrop{background:rgba(255,255,255,.95)}
+    .dialog-box{border:1px solid var(--border);padding:2rem;background:var(--pane-bg);
+      border-radius:6px;width:500px;box-shadow:0 4px 12px rgba(0,0,0,.1)}
+    .dialog-box h2{font-size:1.2rem;margin-bottom:.5rem}
+    .dialog-box .sub{color:var(--muted);font-size:.88rem;margin-bottom:1.5rem;line-height:1.45}
+    .field{margin-bottom:.8rem}
+    .field label{display:block;font-size:.78rem;font-weight:700;margin-bottom:.3rem;
+      text-transform:uppercase;color:var(--muted)}
+    select,input[type=file],input[type=text]{width:100%;padding:.5rem;font-family:var(--sans);
+      border:1px solid var(--border);border-radius:4px}
+    button{padding:.6rem 1rem;border:none;background:var(--primary);color:#fff;border-radius:4px;
+      cursor:pointer;font-weight:700;width:100%;margin-top:.5rem}
+    button:hover:not(:disabled){background:#004494}
+    button:disabled{background:#aaa;cursor:not-allowed}
+    .panel[hidden]{display:none!important}
+    progress{display:block;width:100%;height:8px;border:none;border-radius:4px;margin-top:.5rem}
+    progress::-webkit-progress-bar{background:#eee;border-radius:4px}
+    progress::-webkit-progress-value{background:var(--primary);transition:width .2s}
+    progress::-moz-progress-bar{background:var(--primary)}
+    .url-grid{display:grid;grid-template-columns:1fr 1fr;gap:.5rem}
+
+    /* ── App: flex column, mode tabs on top ── */
+    #app{display:flex;flex-direction:column;height:100vh}
+    #app[hidden]{display:none!important}
+
+    /* ── Mode tab bar ── */
+    #mode-bar{flex-shrink:0;display:flex;background:#ebebeb;border-bottom:2px solid var(--border)}
+    .mode-tab{width:auto;margin:0;padding:.5rem 1.3rem;background:transparent;color:var(--muted);
+      border:none;border-bottom:2px solid transparent;margin-bottom:-2px;border-radius:0;
+      font-size:.88rem;cursor:pointer;font-weight:normal}
+    .mode-tab:hover:not(.active):not(:disabled){background:#ddd}
+    .mode-tab.active{color:var(--primary);border-bottom-color:var(--primary);
+      background:var(--pane-bg);font-weight:700}
+
+    /* ── Chat layout (existing) ── */
+    #chat-layout{flex:1;display:grid;grid-template-columns:1fr 1fr;overflow:hidden}
+    #app.doc-mode #chat-layout{display:none}
+
+    /* ── Document layout (full-width, hidden by default) ── */
+    #doc-layout{flex:1;display:none;flex-direction:column;overflow:hidden}
+    #app.doc-mode #doc-layout{display:flex}
+    #doc-toolbar{flex-shrink:0;padding:.6rem 1rem;background:#fafafa;
+      border-bottom:1px solid var(--border);display:flex;gap:.5rem;align-items:center;flex-wrap:wrap}
+    #doc-toolbar button{width:auto;padding:.35rem .8rem;margin-top:0;font-size:.82rem}
+    #doc-status{font-size:.82rem;color:var(--muted);margin-left:auto}
+    #doc-split{flex:1;display:grid;grid-template-columns:40fr 60fr;overflow:hidden}
+    #doc-source{padding:1rem;border:none;border-right:1px solid var(--border);
+      font-family:var(--mono);font-size:.88rem;line-height:1.55;resize:none;
+      overflow-y:auto;background:#fafafa;color:var(--text);outline:none}
+    #doc-preview{overflow-y:auto;padding:1.5rem;font-size:.95rem;line-height:1.65}
+
+    /* Document block widgets in preview */
+    .doc-block{border:1px solid #b8cde0;border-radius:4px;margin:1rem 0;background:#f4f8ff;overflow:hidden}
+    .doc-block-header{display:flex;justify-content:space-between;align-items:center;
+      padding:.4rem .8rem;background:#d8e8f8;border-bottom:1px solid #b8cde0}
+    .doc-block-type{font-size:.74rem;font-weight:700;text-transform:uppercase;color:#446;letter-spacing:.04em}
+    .doc-run-btn{width:auto;margin:0;padding:.2rem .6rem;font-size:.78rem;border-radius:3px;background:var(--primary)}
+    .doc-block-body{padding:.5rem .8rem;font-size:.85rem;color:#444;line-height:1.5}
+    .doc-block-field{margin-bottom:.3rem}
+    .doc-eval-row{padding:.25rem 0;border-bottom:1px dotted #ccc;font-size:.82rem}
+    .doc-eval-row:last-child{border-bottom:none}
+    .doc-output{background:#f0fff4;border-left:3px solid #48bb78;padding:.8rem 1rem;
+      margin:.25rem 0 1rem;border-radius:0 4px 4px 0}
+    .doc-output-streaming{background:#fffbeb;border-left:3px solid #f6ad55;padding:.8rem 1rem;
+      margin:.25rem 0;border-radius:0 4px 4px 0;animation:pulse 1.4s ease-in-out infinite}
+
+    /* ── Pane chrome ── */
+    aside{border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
+    .pane-hdr{padding:.6rem 1rem;background:#eee;border-bottom:1px solid var(--border);
+      font-size:.82rem;font-weight:700;text-transform:uppercase;color:var(--muted);
+      flex-shrink:0;display:flex;justify-content:space-between;align-items:center}
+    #right-pane{display:grid;grid-template-rows:35fr 65fr;overflow:hidden}
+    #docs-container{flex:1;overflow-y:auto;padding:1rem;display:flex;flex-direction:column;gap:1rem}
+    article.doc-frame{border:1px solid var(--border);background:var(--pane-bg);border-radius:4px;
+      display:flex;flex-direction:column;min-height:250px;max-height:45vh}
+    .doc-title{padding:.5rem 1rem;font-family:var(--mono);font-size:.85rem;
+      border-bottom:1px solid #eaeaea;font-weight:700;color:#444;flex-shrink:0}
+    .doc-content{flex:1;overflow-y:auto;padding:1.5rem;font-size:.95rem;line-height:1.6}
+    .doc-content h1,.doc-content h2,.doc-content h3{margin-top:1.2rem;margin-bottom:.5rem}
+    .doc-content p,.doc-content ul{margin-bottom:.8rem}
+    #state-section{border-bottom:1px solid var(--border);display:flex;flex-direction:column;
+      overflow:hidden;background:#fdfdfd}
+    output#state-output{display:block;flex:1;overflow-y:auto;padding:1rem;
+      font-family:var(--mono);font-size:.83rem;white-space:pre-wrap}
+    #chat-section{display:flex;flex-direction:column;overflow:hidden}
+    #chat-history{flex:1;overflow-y:auto;padding:1.5rem;display:flex;flex-direction:column;gap:1rem}
+    .msg{max-width:90%;padding:.8rem 1rem;border-radius:6px;font-size:.95rem;line-height:1.5}
+    .msg.user{align-self:flex-end;background:var(--user-msg);border:1px solid #dce8f6}
+    .msg.bot{align-self:flex-start;background:var(--sys-msg);border:1px solid #e5e5e5}
+    .msg.bot.streaming{color:var(--muted);font-style:italic;animation:pulse 1.4s ease-in-out infinite}
+    @keyframes pulse{0%,100%{opacity:1}50%{opacity:.45}}
+    #input-form{padding:1rem;border-top:1px solid var(--border);display:flex;gap:.5rem;
+      align-items:flex-end;background:#fafafa;flex-shrink:0}
+    #chat-input{flex:1;padding:.6rem;border:1px solid var(--border);border-radius:4px;
+      font-family:var(--sans);font-size:.95rem;resize:none;height:50px}
+    #new-search-btn,#send-btn{width:auto;padding:0 1rem;height:50px;margin-top:0;flex-shrink:0}
+    .md-body{line-height:1.65}
+    .md-body h1,.md-body h2,.md-body h3{font-weight:700;margin:.9rem 0 .35rem}
+    .md-body h1{font-size:1.15rem}.md-body h2{font-size:1.05rem}.md-body h3{font-size:.97rem;color:#444}
+    .md-body p{margin-bottom:.55rem}
+    .md-body ul,.md-body ol{padding-left:1.4em;margin-bottom:.55rem}
+    .md-body code{font-family:var(--mono);font-size:.85em;background:#e8e8e8;padding:.1em .35em;border-radius:3px}
+    .md-body blockquote{border-left:3px solid var(--primary);margin:.4rem 0;
+      padding:.3rem .8rem;color:#555;background:#f0f4fa;border-radius:0 4px 4px 0}
+    .md-body.streaming-cursor::after{content:'▋';display:inline;
+      animation:blink .8s step-end infinite;color:var(--primary);margin-left:1px}
+    @keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
+    .pass3-block{background:#f0f4fa;border:1px solid #c8d8f0;
+      border-top:2px dashed #c8d8f0;border-radius:0 0 6px 6px;margin-top:-.5rem}
+    .pass3-block .md-body blockquote{cursor:pointer;background:#e4ecf8;border-left-color:#4a90d9}
+    .pass3-block .md-body blockquote:hover{background:#d4e4f8}
+    .citation-chip{display:inline-block;font-family:var(--mono);font-size:.75rem;
+      background:#e0e0e0;padding:4px 8px;border-radius:4px;margin:8px 5px 0 0;
+      cursor:pointer;transition:background .2s}
+    .citation-chip:hover{background:#d0d0d0}
+    .citation-chip.chip-active{background:var(--hl);color:#222;box-shadow:0 0 0 1px #e6c84c}
+    abbr.wiki-term{cursor:help;border-bottom:1px dotted var(--primary);
+      text-decoration:none;color:inherit;font-style:normal}
+    abbr.wiki-term:hover{background:rgba(0,86,179,.08);border-radius:2px}
+    #restore-info{font-size:.82rem;line-height:1.8;padding:.8rem;background:#f4f4f4;border-radius:4px;margin-bottom:1rem}
+    [popover]{padding:1rem;max-width:320px;font-size:.85rem;border:1px solid #ccc;border-radius:6px;background:white}
+  </style>
+</head>
+<body>
+
+<dialog id="setup-dialog">
+  <div class="dialog-box panel" id="panel-restore" hidden>
+    <h2>AIbaarAI — Sessie herstellen</h2>
+    <p class="sub">Gecachede documenten gevonden. Herstellen of nieuwe sessie starten?</p>
+    <div id="restore-info"></div>
+    <button id="btn-restore">↺ Herstellen — vectoren reeds berekend</button>
+    <button id="btn-new-session" style="background:#888;margin-top:.5rem">✕ Nieuwe sessie starten</button>
+  </div>
+
+  <div class="dialog-box panel" id="panel-choice" hidden>
+    <h2>AIbaarAI — Kies backend</h2>
+    <p class="sub">Selecteer de inferentiebackend voor deze sessie.</p>
+    <button id="btn-choice-lms"   style="margin-bottom:.4rem">🖥 LM Studio — lokaal, zonder reranking</button>
+    <button id="btn-choice-llama" style="margin-bottom:.4rem">⚙️ llama.cpp — lokaal, met reranking + streaming</button>
+    <button id="btn-choice-tjs">🌐 Browser AI — geen server nodig</button>
+  </div>
+
+  <div class="dialog-box panel" id="panel-lmstudio" hidden>
+    <h2>AIbaarAI — LM Studio</h2>
+    <p class="sub">Zorg dat LM Studio draait met CORS ingeschakeld.</p>
+    <div class="field"><label>API Endpoint</label>
+      <input type="text" id="lms-url" value="http://127.0.0.1:1234"></div>
+    <button id="btn-lms-connect">Verbind met LM Studio</button>
+    <div id="lms-model-selects" hidden style="margin-top:1.5rem">
+      <div class="field"><label>Chat Model</label><select id="lms-chat"></select></div>
+      <div class="field"><label>Embedding Model</label><select id="lms-embed"></select></div>
+      <div class="field">
+        <label>Selecteer Markdown Documenten
+          <button type="button" popovertarget="md-hint"
+            style="all:unset;cursor:pointer;font-size:.9rem;margin-left:.3rem">ⓘ</button>
+        </label>
+        <input type="file" id="lms-files" multiple accept=".md">
+      </div>
+      <button id="btn-lms-start">Start Platform</button>
+    </div>
+  </div>
+
+  <div class="dialog-box panel" id="panel-llamacpp" hidden>
+    <h2>AIbaarAI — llama.cpp</h2>
+    <p class="sub">Elke service kan op een eigen poort draaien. Vul de URL in per functie.</p>
+    <div class="url-grid">
+      <div class="field"><label>Chat / LLM URL</label>
+        <input type="text" id="llama-chat-url" value="http://127.0.0.1:8082"></div>
+      <div class="field"><label>Embedding URL</label>
+        <input type="text" id="llama-embed-url" value="http://127.0.0.1:8080"></div>
+      <div class="field"><label>Reranker URL (optioneel)</label>
+        <input type="text" id="llama-rerank-url" value="http://127.0.0.1:8081"></div>
+    </div>
+    <button id="btn-llama-connect">Verbind met alle poorten</button>
+    <div id="llama-model-selects" hidden style="margin-top:1.5rem">
+      <div class="field"><label>Chat Model</label><select id="llama-chat"></select></div>
+      <div class="field">
+        <label style="display:flex;gap:.5rem;align-items:center;cursor:pointer">
+          <input type="checkbox" id="llama-switch" style="width:auto">
+          Granite Switch (aLoRA-adapters + KV-cache hergebruik)
+        </label>
+        <small id="llama-switch-note" style="color:#888">Alleen voor een Granite Switch GGUF. Start llama-server bij voorkeur met <code>-np 2</code>.</small>
+      </div>
+      <div class="field"><label>Embedding Model</label><select id="llama-embed"></select></div>
+      <div class="field"><label>Reranker Model (optioneel)</label><select id="llama-rerank"></select></div>
+      <div class="field">
+        <label>Selecteer Markdown Documenten
+          <button type="button" popovertarget="md-hint"
+            style="all:unset;cursor:pointer;font-size:.9rem;margin-left:.3rem">ⓘ</button>
+        </label>
+        <input type="file" id="llama-files" multiple accept=".md">
+      </div>
+      <button id="btn-llama-start">Start Platform</button>
+    </div>
+  </div>
+
+  <div class="dialog-box panel" id="panel-transformers" hidden>
+    <h2>AIbaarAI — Browser AI</h2>
+    <p class="sub">Modellen worden van HuggingFace CDN gedownload en gecached.</p>
+    <button id="btn-tjs-load">⬇ Download &amp; Laad Modellen</button>
+    <div id="tjs-progress" hidden style="margin-top:1rem">
+      <p id="tjs-prog-text" style="font-size:.85rem;color:var(--muted);margin-bottom:.3rem">Laden...</p>
+      <progress id="tjs-prog-bar" max="100" value="0"></progress>
+    </div>
+    <div id="tjs-file-section" hidden style="margin-top:1.5rem">
+      <div class="field">
+        <label>Selecteer Markdown Documenten
+          <button type="button" popovertarget="md-hint"
+            style="all:unset;cursor:pointer;font-size:.9rem;margin-left:.3rem">ⓘ</button>
+        </label>
+        <input type="file" id="tjs-files" multiple accept=".md">
+      </div>
+      <button id="btn-tjs-start">Start Platform</button>
+    </div>
+  </div>
+
+  <div class="dialog-box panel" id="panel-loading" hidden>
+    <h2>Documenten laden...</h2>
+    <p id="load-text" style="font-size:.85rem;color:var(--muted);margin-bottom:.5rem">Verwerken...</p>
+    <progress id="load-bar" max="100" value="0"></progress>
+  </div>
+</dialog>
+
+
+<main id="app" hidden>
+
+  <!-- ── Mode tab bar ── -->
+  <nav id="mode-bar">
+    <button class="mode-tab active" id="tab-chat">💬 Chat &amp; Documenten</button>
+    <button class="mode-tab"        id="tab-doc">📄 Template Editor</button>
+  </nav>
+
+  <!-- ── Chat layout ── -->
+  <div id="chat-layout">
+    <aside id="docs-pane">
+      <header class="pane-hdr">
+        Document Viewer
+        <button type="button" id="clear-docs-btn"
+          title="Wis gecachede documenten en herstart"
+          style="all:unset;cursor:pointer;font-size:.75rem;color:var(--muted);
+                 padding:.15rem .5rem;border-radius:3px;border:1px solid var(--border);
+                 background:white;font-weight:normal">🗑 Wissen</button>
+      </header>
+      <div id="docs-container"></div>
+    </aside>
+    <div id="right-pane">
+      <section id="state-section">
+        <header class="pane-hdr">Actuele Situatie, Intentie &amp; Redenering (JSON)</header>
+        <output id="state-output" role="status">{
+  "status": "Wachtend op invoer..."
+}</output>
+      </section>
+      <section id="chat-section">
+        <header class="pane-hdr" id="chat-label">AIbaarAI — Multidisciplinair Overleg</header>
+        <div id="chat-history" role="log" aria-live="polite"></div>
+        <form id="input-form" autocomplete="off">
+          <textarea id="chat-input" rows="2" placeholder="Stel een vraag over de documenten..."></textarea>
+          <button type="button" id="new-search-btn"
+            title="Nieuwe zoekopdracht" style="background:#888">🔍</button>
+          <button type="submit" id="send-btn">Stuur</button>
+        </form>
+      </section>
+    </div>
+  </div>
+
+  <!-- ── Document layout ── -->
+  <div id="doc-layout">
+    <div id="doc-toolbar">
+      <strong style="font-size:.82rem;color:var(--muted)">📄 Template</strong>
+      <label style="font-size:.82rem;color:var(--muted);margin:0">
+        <input type="file" id="template-upload" accept=".md"
+          style="font-size:.78rem;padding:.2rem">
+      </label>
+      <button id="doc-play-all" type="button">▶▶ Alles uitvoeren</button>
+      <button id="doc-stop"     type="button" disabled style="background:#888">⏹ Stop</button>
+      <button id="doc-download" type="button" style="background:#555">⬇ Download .md</button>
+      <span id="doc-status"></span>
+    </div>
+    <div id="doc-split">
+      <textarea id="doc-source"
+        placeholder="Upload template.md of begin hier te typen...&#10;&#10;Gebruik:&#10;  ```prompt&#10;  retrieval: wat zoeken&#10;  rewrite: hoe schrijven&#10;  ```&#10;&#10;  ```evaluation&#10;  | Aspect | Beschrijving | 1★ | 2★ | 3★ |&#10;  ```"></textarea>
+      <div id="doc-preview"></div>
+    </div>
+  </div>
+
+</main>
+
+<div id="md-hint" popover>
+  <strong>Markdown tips:</strong><br><br>
+  ✅ Koppen (# ## ###) per onderwerp<br>
+  ✅ Korte alinea's<br><br>
+  <strong>thesaurus.md:</strong> upload voor synoniemexpansie.<br>
+  Format: <code>## Term / **Definitie:** ... / **Synoniemen:** a, b</code><br><br>
+  <strong>template.md:</strong> gebruik in de 📄 tab.<br>
+  <code>```prompt&#10;retrieval: ...&#10;rewrite: ...&#10;```</code><br>
+  <code>```evaluation&#10;| Aspect | Desc | 1★ | 2★ | 3★ |&#10;```</code>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════════════════════════
+  FLOWS — every LLM pass, retrieval step and prompt of the app, one block per flow.
+  Syntax: PDL-style (steps pass results to later steps via `def:` → ${var}),
+  written in TOON (indentation, `key: value`, `key[N]: a,b`, `key[N]{f1,f2}:` rows).
+  One extension: `key: |` starts an indented plain-text block (for prompts).
+  Step kinds: set · expand · retrieve · context · llm · scan_retry · require
+  `use: flow.id` copies a step from another flow; keys beside it override.
+  Edit here; nothing else in the code holds prompt text or pass parameters.
+════════════════════════════════════════════════════════════════════════════ -->
+<script type="text/plain" id="flow-chat">
+flow: chat
+note: RAG chat — pass 0 decompose → hybrid retrieval + rerank → pass 1 decision → absence scan → pass 2 answer → pass 3 summary + follow-ups
+models[3]{role,used_by}:
+  chat,"p0 p1 scan p2 p3"
+  embed,retrieve
+  rerank,retrieve
+inputs[4]: question,prev_question,thes_terms,example_doc
+steps[19]:
+  - id: prev_ctx
+    kind: set
+    from: prev_question
+    wrap: "Previous question: %s\n"
+    def: prev_ctx
+  - id: thes_hint
+    kind: set
+    from: thes_terms
+    wrap: "\nAvailable vocabulary: %s"
+    def: thes_hint
+  - id: p0
+    kind: llm
+    role: chat
+    label: 🔍 Vraag analyseren (pass 0)...
+    mode: complete
+    max_tokens: 190
+    temperature: 0
+    parse: json
+    on_error: fallback
+    expect[4]{field,type,allowed,fallback}:
+      search_terms,list,,
+      answer_shape,enum,regelgeving|procedure|definitie|bedrag|termijn|vergelijking|algemeen,algemeen
+      likely_contains,list,,
+      language,text,,
+    def: p0
+    system: |
+      You decompose questions into retrieval targets. DO NOT answer or judge permissibility.
+
+      Output JSON only:
+      {"search_terms":["key nouns, codes"],"answer_shape":"<EXACTLY ONE WORD: regelgeving OR procedure OR definitie OR bedrag OR termijn OR vergelijking OR algemeen>","likely_contains":["concepts a complete answer would cite"],"language":"<the natural language of the Question below, written out in English, e.g. Dutch, English, German, French, Spanish, Czech, Arabic, Polish>"}
+
+      answer_shape MUST be exactly one word from the list above — no combinations, no pipes, no invented values.
+      Detect "language" from the Question text itself, not from this system prompt. EXCLUDE directional words: allowed, forbidden, may, must, required, prohibited.${thes_hint}
+    user: |
+      ${prev_ctx}Question: ${question}
+
+      Decompose (JSON only):
+  - id: terms
+    kind: expand
+    from[2]: p0.search_terms,p0.likely_contains
+    def: terms
+  - id: lang_name
+    kind: set
+    from: p0.language
+    default: the same language as the Question
+    def: lang_name
+  - id: idk
+    kind: pick
+    from: p0.language
+    def: idk
+    table[13]{lang,text}:
+      default,"I don't know — the loaded documents contain no information that answers this question."
+      English,"I don't know — the loaded documents contain no information that answers this question."
+      Dutch,"Ik weet het niet — de geladen documenten bevatten geen informatie die deze vraag beantwoordt."
+      German,"Ich weiß es nicht — die geladenen Dokumente enthalten keine Informationen, die diese Frage beantworten."
+      French,"Je ne sais pas — les documents chargés ne contiennent aucune information qui répond à cette question."
+      Spanish,"No lo sé — los documentos cargados no contienen información que responda a esta pregunta."
+      Italian,"Non lo so — i documenti caricati non contengono informazioni che rispondano a questa domanda."
+      Portuguese,"Não sei — os documentos carregados não contêm informações que respondam a esta pergunta."
+      Czech,"Nevím — načtené dokumenty neobsahují informace, které by tuto otázku zodpovídaly."
+      Arabic,"لا أعرف — المستندات المحمّلة لا تحتوي على معلومات تجيب عن هذا السؤال."
+      Japanese,"わかりません — 読み込まれた文書には、この質問に答える情報が含まれていません。"
+      Korean,"모르겠습니다 — 불러온 문서에는 이 질문에 답하는 정보가 없습니다."
+      Chinese,"我不知道 — 已加载的文档中没有能回答这个问题的信息。"
+  - id: retrieve
+    kind: retrieve
+    role: embed,rerank
+    query: ${question}
+    docs: docs
+    terms: terms
+    def: chunks
+    reuse: prior
+    candidates: 12
+    top_k: 5
+    rrf_k: 60
+    max_share_per_doc: 0.5
+    exact_phrase_bonus: 0.015
+    rerank: auto
+    min_cosine: 0.64
+    on_empty: stop
+    reply: "❌ ${idk}"
+  - id: lang_instr
+    kind: set
+    value: Write your whole answer in ${lang_name}, even if the context blocks are in another language. Never answer in English unless the Question is in English.
+    def: lang_instr
+  - id: ctx
+    kind: context
+    from: chunks
+    neighbours: auto
+    max: 15
+    def: context
+  - id: p1
+    kind: llm
+    role: chat
+    label: 🧠 Beslissing nemen (pass 1)...
+    mode: complete
+    max_tokens: 900
+    temperature: 0
+    parse: extract
+    retry: 1
+    valid: parsed
+    on_fail: stop
+    reply: |
+      ⚠️ Pass 1: no valid JSON after retry.
+
+      ${p1_raw}
+    history: chat
+    history_turns: 8
+    def: p1
+    system: |
+      You are a RAG analyst. Use ONLY the provided context blocks. Do not invent information.
+
+      Context format: [Doc: <name>, ChunkId: <name>_<N>, Relevance: <score>]
+
+      Output valid JSON only. No markdown. Start with { end with }.
+      {"decision":"<phrase>","state_update":{"intent":"<intent>","user_facts":[],"facts_gathered":[]},"citations":[{"document":"${example_doc}","chunkId":"${example_doc}_3"}]}
+
+      Rules: no reply field. user_facts from question. facts_gathered from context. Copy chunkId exactly. IMPORTANT: citations should list EVERY context chunk that contributed to your decision or facts_gathered — not just the single most relevant one. If 3 chunks were useful, cite all 3.
+    user: |
+      ${context}
+      Question: ${question}
+  - id: scan
+    kind: scan_retry
+    of: p1
+    terms: terms
+    retrieve_step: retrieve
+    context_step: ctx
+    no_evidence: niet gevonden|not found|geen informatie|insufficient|onbekend
+    suffix: "\n\n[${extra_count} extra chunks via full-corpus scan]"
+  - id: judge
+    kind: llm
+    role: chat
+    label: ⚖️ Relevantie controleren...
+    mode: complete
+    max_tokens: 20
+    temperature: 0
+    parse: json
+    on_error: fallback
+    expect[1]{field,type,allowed,fallback}:
+      answerable,enum,yes|no,yes
+    def: judge
+    system: |
+      You check whether context blocks answer a question. Output JSON only: {"answerable":"yes"} or {"answerable":"no"}.
+
+      Answer "yes" ONLY if the context blocks contain specific information that directly answers the question.
+      Answer "no" if the context is only loosely related, shares a few words, or covers a different subject.
+      Judge by meaning, not by wording. The question may be in any language. Do not use your own knowledge.
+    user: |
+      ${context}
+
+      Question: ${question}
+
+      JSON:
+  - id: answerable_ok
+    kind: set
+    from: judge.answerable
+    unless: no
+    def: answerable_ok
+  - id: need_answerable
+    kind: require
+    var: answerable_ok
+    reply: "❌ ${idk}"
+  - id: need_citations
+    kind: require
+    var: p1.citations
+    reply: "❌ ${idk}"
+  - id: shape_hint
+    kind: set
+    from: p0.answer_shape
+    unless: algemeen
+    wrap: " Expected: %s."
+    def: shape_hint
+  - id: decision_line
+    kind: set
+    from: p1.decision
+    wrap: "Decision: %s\n\n"
+    def: decision_line
+  - id: p2
+    kind: llm
+    role: chat
+    label: ✍️ Antwoord opstellen (pass 2)...
+    mode: stream
+    def: answer
+    system: You are a practical assistant. Answer ONLY from the context blocks. If they do not contain the answer, say so in one sentence and stop. ${lang_instr}${shape_hint} Use markdown. Be concise.
+    user: |
+      ${decision_line}${context}
+
+      Question: ${question}
+
+      Write a practical markdown answer. ${lang_instr}
+  - id: p3
+    kind: llm
+    role: chat
+    label: 💬 Samenvatting & vervolgvragen (pass 3)...
+    mode: complete
+    max_tokens: 300
+    temperature: 0.3
+    on_error: continue
+    def: p3
+    system: You compress text and generate follow-up questions on request. ${lang_instr}
+    user: |
+      Original question: ${question}
+
+      Context: ${intent_ctx}. Known facts: ${acc_facts}. Answer type: ${p0.answer_shape}.
+
+      TEXT TO COMPRESS:
+      ${answer}
+
+      ---
+      Now do exactly this, based ONLY on the TEXT TO COMPRESS above:
+
+      [SHORT ANSWER]
+      Summarize the TEXT TO COMPRESS in 2-3 sentences. ${lang_instr} No bullet points, no headers.
+
+      [FOLLOW-UP]
+      Write exactly 2 short follow-up questions (one per line, each starting with ">"), in ${lang_name}, that build on the specific content of the TEXT TO COMPRESS above.
+</script>
+
+<script type="text/plain" id="flow-doc_prompt">
+flow: doc_prompt
+note: Document builder, one ```prompt block — passes 0-1 and retrieval shared with chat, then research + rewrite. $1 $2 $name $prev from earlier blocks are already substituted into question and rewrite_given.
+models[3]{role,used_by}:
+  chat,"p0 p1 research rewrite"
+  embed,retrieve
+  rerank,retrieve
+consts:
+  default_rewrite: Write a clear, professional document section based on the research findings.
+inputs[6]: question,docs,rewrite_given,do_rewrite,thes_terms,example_doc
+steps[11]:
+  - use: chat.thes_hint
+  - use: chat.p0
+  - use: chat.terms
+  - use: chat.retrieve
+    reuse: never
+    min_cosine: 0
+    reply: "❌ Geen relevante chunks gevonden — I don't know."
+  - use: chat.ctx
+  - use: chat.p1
+    history: none
+    valid: decision
+    on_fail: continue
+  - use: chat.decision_line
+  - id: research
+    kind: llm
+    role: chat
+    label: 📚 Bevindingen samenstellen...
+    mode: stream
+    def: findings
+    system: You are a thorough research assistant. Compile all relevant information from the context. Be comprehensive and factual.
+    user: |
+      ${decision_line}${context}
+
+      Research question: ${question}
+
+      Compile findings:
+  - id: rewrite_instr
+    kind: set
+    value: ${rewrite_given}
+    default: ${default_rewrite}
+    def: rewrite_instr
+    when: do_rewrite
+  - id: rewrite
+    kind: llm
+    role: chat
+    label: ✍️ Document schrijven...
+    mode: stream
+    when: do_rewrite
+    def: output
+    system: You are a professional document writer. Transform research findings into polished document prose. Output only the document text, no meta-commentary.
+    user: |
+      Writing instruction: ${rewrite_instr}
+
+      Research findings:
+      ${findings}
+
+      Write the document section:
+  - id: output
+    kind: set
+    from: findings
+    def: output
+    when: !do_rewrite
+</script>
+
+<script type="text/plain" id="flow-doc_eval">
+flow: doc_eval
+note: Document builder, one rubric row of an ```evaluation block — optional do-rag lookup first, then one scoring call. Runs once per row.
+models[3]{role,used_by}:
+  chat,"p0 score"
+  embed,retrieve
+  rerank,retrieve
+inputs[9]: rag,row_title,row_description,row_onestar,row_twostar,row_threestar,scope_text,thes_terms,example_doc
+steps[8]:
+  - id: question
+    kind: set
+    value: ${row_title} ${row_description}
+    def: question
+    when: rag
+  - use: chat.thes_hint
+    when: rag
+  - use: chat.p0
+    when: rag
+  - use: chat.terms
+    when: rag
+  - use: chat.retrieve
+    query: ${row_description}
+    reuse: never
+    min_cosine: 0
+    on_empty: continue
+    when: rag
+  - use: chat.ctx
+    when: rag
+  - id: ref_context
+    kind: set
+    from: context
+    wrap: "REFERENCE CONTEXT:\n%s\n\n"
+    def: ref_context
+  - id: score
+    kind: llm
+    role: chat
+    mode: complete
+    max_tokens: 120
+    temperature: 0.1
+    def: verdict
+    system: You are a strict document quality evaluator. Output ONLY the requested format.
+    user: |
+      Evaluate the following text on the rubric criterion below.
+
+      ${ref_context}TEXT TO EVALUATE:
+      ${scope_text}
+
+      RUBRIC:
+      Aspect: ${row_title}
+      Description: ${row_description}
+      ★ (barely passing): ${row_onestar}
+      ★★ (good): ${row_twostar}
+      ★★★ (excellent): ${row_threestar}
+
+      Output format exactly: **${row_title} ★N** — [one-sentence motivation]
+      Replace N with 1, 2, or 3. Be honest and critical.
+</script>
+
+<script type="text/plain" id="flow-switch">
+flow: switch
+note: Granite Switch registry + shared conversations. A convo is rendered to ONE identical prompt prefix, so llama.cpp reuses its KV cache for every pass that names the same convo. Control tokens only ever appear in the tail of an adapter call, never in a prompt that a base-model pass reuses.
+server:
+  marker_sep: "\n\n"
+  n_probs: 20
+  stop[2]: <|end_of_text|>,<|start_of_role|>
+adapters[3]{name,trigger,token,marker}:
+  answerability,role,<|answerability|>,
+  query_rewrite,role,<|query_rewrite|>,
+  decisions,marker,,"### DECISION"
+convos:
+  ground:
+    system: |
+      You are a RAG assistant. Use ONLY the documents below. Do not invent information.
+
+      Document format: [Doc: <name>, ChunkId: <name>_<N>, Relevance: <score>]
+
+      <documents>
+      ${context}
+      </documents>
+    user: ${standalone}
+  history:
+    turns: chat
+    turns_max: 6
+    user: ${question}
+</script>
+
+<script type="text/plain" id="flow-chat_switch">
+flow: chat_switch
+note: RAG chat on Granite Switch — query_rewrite (follow-ups) → pass 0 (terms only) + decisions (shape, language) → hybrid retrieval + rerank → pass 1 → absence scan → answerability gate → pass 2 → pass 3. Pass 1, the gate and pass 2 share one cached prefix (convo ground).
+models[3]{role,used_by}:
+  chat,"rewrite p0 shape language p1 scan judge p2 p3"
+  embed,retrieve
+  rerank,retrieve
+inputs[4]: question,prev_question,thes_terms,example_doc
+steps[24]:
+  - use: chat.thes_hint
+  - id: rewrite
+    kind: adapter
+    adapter: query_rewrite
+    label: 🔄 Vraag herformuleren (query_rewrite)...
+    convo: history
+    slot: aux
+    max_tokens: 80
+    parse: field
+    field: rewritten_question
+    max_chars: 300
+    fallback: ""
+    on_error: fallback
+    def: rewritten
+    when: prev_question
+    then: |
+      Rewrite the final user question into a standalone question that is understandable without the conversation history. Keep the language of the question. Output JSON: {"rewritten_question": "<question>"}
+  - id: standalone
+    kind: set
+    from: rewritten
+    default: ${question}
+    def: standalone
+  - use: chat.p0
+    slot: aux
+    max_tokens: 120
+    expect[2]{field,type,allowed,fallback}:
+      search_terms,list,,
+      likely_contains,list,,
+    system: |
+      You decompose questions into retrieval targets. DO NOT answer or judge permissibility.
+
+      Output JSON only:
+      {"search_terms":["key nouns, codes"],"likely_contains":["concepts a complete answer would cite"]}
+
+      EXCLUDE directional words: allowed, forbidden, may, must, required, prohibited.${thes_hint}
+    user: |
+      Question: ${standalone}
+
+      Decompose (JSON only):
+  - id: shape
+    kind: decide
+    adapter: decisions
+    label: 🧭 Vraagtype bepalen (decisions)...
+    slot: aux
+    state: ${standalone}
+    question: What kind of answer does this question call for?
+    options[7]{key,text}:
+      regelgeving,"Rules or regulations: what is allowed, forbidden or required"
+      procedure,"A procedure or step-by-step process"
+      definitie,"A definition or explanation of a term"
+      bedrag,"An amount, price, rate or percentage"
+      termijn,"A deadline, period or date"
+      vergelijking,"A comparison between options"
+      algemeen,"A general question that fits none of the above"
+    fallback: algemeen
+    on_error: fallback
+    def: p0.answer_shape
+  - id: language
+    kind: decide
+    adapter: decisions
+    label: 🌐 Taal bepalen (decisions)...
+    slot: aux
+    state: ${standalone}
+    question: In which language is the State text written?
+    options[13]{key,text}:
+      Dutch,"Dutch (Nederlands)"
+      English,"English"
+      German,"German (Deutsch)"
+      French,"French (Français)"
+      Spanish,"Spanish (Español)"
+      Italian,"Italian (Italiano)"
+      Portuguese,"Portuguese (Português)"
+      Czech,"Czech (Čeština)"
+      Arabic,"Arabic"
+      Japanese,"Japanese"
+      Korean,"Korean"
+      Chinese,"Chinese"
+      other,"Any other language"
+    fallback: other
+    on_error: fallback
+    def: p0.language
+  - use: chat.terms
+  - use: chat.lang_name
+    unless: other
+  - use: chat.idk
+  - use: chat.retrieve
+    query: ${standalone}
+  - use: chat.lang_instr
+  - use: chat.ctx
+  - id: p1
+    kind: llm
+    role: chat
+    label: 🧠 Beslissing nemen (pass 1)...
+    convo: ground
+    slot: main
+    mode: complete
+    max_tokens: 900
+    temperature: 0
+    parse: extract
+    retry: 1
+    valid: parsed
+    on_fail: stop
+    reply: |
+      ⚠️ Pass 1: no valid JSON after retry.
+
+      ${p1_raw}
+    def: p1
+    then: |
+      You are a RAG analyst. Output valid JSON only. No markdown. Start with { end with }.
+      {"decision":"<phrase>","state_update":{"intent":"<intent>","user_facts":[],"facts_gathered":[]},"citations":[{"document":"${example_doc}","chunkId":"${example_doc}_3"}]}
+
+      Rules: no reply field. user_facts from the question. facts_gathered from the documents. Copy chunkId exactly. IMPORTANT: citations should list EVERY document chunk that contributed to your decision or facts_gathered — not just the single most relevant one. If 3 chunks were useful, cite all 3.
+  - id: cites
+    kind: cites
+    of: p1
+    context_step: ctx
+  - use: chat.scan
+    suffix: "\n\n[${extra_count} extra chunks via full-corpus scan]"
+  - id: cites_scan
+    kind: cites
+    of: p1
+    context_step: ctx
+  - id: judge
+    kind: adapter
+    adapter: answerability
+    label: ⚖️ Beantwoordbaarheid controleren (answerability)...
+    convo: ground
+    slot: main
+    max_tokens: 12
+    parse: label
+    field: answerable
+    threshold: 0.5
+    high: yes
+    low: no
+    fallback: yes
+    on_error: fallback
+    labels[2]{value,match}:
+      no,"unanswerable|not answerable"
+      yes,"answerable"
+    def: judge
+  - use: chat.answerable_ok
+  - use: chat.need_answerable
+  - use: chat.need_citations
+  - use: chat.shape_hint
+  - use: chat.decision_line
+  - id: p2
+    kind: llm
+    role: chat
+    label: ✍️ Antwoord opstellen (pass 2)...
+    convo: ground
+    slot: main
+    mode: stream
+    temperature: 0.3
+    def: answer
+    then: |
+      ${decision_line}Answer the question above with a practical markdown answer, using ONLY the documents. If they do not contain the answer, say so in one sentence and stop. ${lang_instr}${shape_hint} Use markdown. Be concise.
+  - use: chat.p3
+    slot: aux
+</script>
+
+<script type="text/plain" id="flow-doc_prompt_switch">
+flow: doc_prompt_switch
+note: Document builder ```prompt block on Granite Switch — pass 0 (terms) + retrieval + pass 1 + research share one cached prefix (convo ground), then rewrite.
+models[3]{role,used_by}:
+  chat,"p0 p1 research rewrite"
+  embed,retrieve
+  rerank,retrieve
+consts:
+  default_rewrite: Write a clear, professional document section based on the research findings.
+inputs[6]: question,docs,rewrite_given,do_rewrite,thes_terms,example_doc
+steps[13]:
+  - use: chat.thes_hint
+  - id: standalone
+    kind: set
+    value: ${question}
+    def: standalone
+  - use: chat_switch.p0
+  - use: chat.terms
+  - use: chat_switch.retrieve
+    reuse: never
+    min_cosine: 0
+    reply: "❌ Geen relevante chunks gevonden — I don't know."
+  - use: chat.ctx
+  - use: chat_switch.p1
+    valid: decision
+    on_fail: continue
+  - use: chat_switch.cites
+  - use: chat.decision_line
+  - id: research
+    kind: llm
+    role: chat
+    label: 📚 Bevindingen samenstellen...
+    convo: ground
+    slot: main
+    mode: stream
+    temperature: 0.3
+    def: findings
+    then: |
+      ${decision_line}You are a thorough research assistant. Compile all relevant information from the documents for the research question below. Be comprehensive and factual.
+
+      Research question: ${question}
+  - use: doc_prompt.rewrite_instr
+  - use: doc_prompt.rewrite
+  - use: doc_prompt.output
+</script>
+
+<script type="text/plain" id="flow-doc_eval_switch">
+flow: doc_eval_switch
+note: One rubric row on Granite Switch. The `decisions` aLoRA turns the ★1/★2/★3 rubric into ONE token (calibrated probabilities); the text under evaluation is the first turn, so every row of a block reuses its KV cache. A short base-model pass then motivates the chosen rating.
+models[3]{role,used_by}:
+  chat,"p0 score reason"
+  embed,retrieve
+  rerank,retrieve
+consts:
+  motivate: true
+  show_confidence: true
+inputs[9]: rag,row_title,row_description,row_onestar,row_twostar,row_threestar,scope_text,thes_terms,example_doc
+steps[13]:
+  - use: doc_eval.question
+  - use: chat.thes_hint
+    when: rag
+  - id: standalone
+    kind: set
+    from: question
+    def: standalone
+    when: rag
+  - use: chat_switch.p0
+    when: rag
+  - use: chat.terms
+    when: rag
+  - use: chat_switch.retrieve
+    query: ${row_description}
+    reuse: never
+    min_cosine: 0
+    on_empty: continue
+    when: rag
+  - use: chat.ctx
+    when: rag
+  - id: ref_context
+    kind: set
+    from: context
+    wrap: "\n\nREFERENCE CONTEXT:\n%s"
+    def: ref_context
+  - id: score
+    kind: decide
+    adapter: decisions
+    slot: main
+    state: |
+      TEXT TO EVALUATE:
+      ${scope_text}${ref_context}
+    question: |
+      Rate the text on this rubric criterion. Be honest and critical.
+      Aspect: ${row_title}
+      Description: ${row_description}
+    options[3]{key,text}:
+      1,"★ (barely passing): ${row_onestar}"
+      2,"★★ (good): ${row_twostar}"
+      3,"★★★ (excellent): ${row_threestar}"
+    fallback: 2
+    def: stars
+  - id: reason
+    kind: llm
+    role: chat
+    continue: score
+    slot: main
+    mode: complete
+    max_tokens: 90
+    temperature: 0.1
+    on_error: continue
+    when: motivate
+    def: reason
+    then: |
+      The rating is ${stars} star(s) out of 3. Write ONE sentence (max 35 words) that motivates this rating for the aspect "${row_title}", citing concrete evidence from the text. Write in the language of the TEXT TO EVALUATE. Output only the sentence.
+  - id: reason_part
+    kind: set
+    from: reason
+    line: true
+    wrap: " — %s"
+    def: reason_part
+  - id: conf_note
+    kind: set
+    from: score_pct
+    wrap: " *(zekerheid: %s%)*"
+    def: conf_note
+    when: show_confidence
+  - id: verdict
+    kind: set
+    value: "**${row_title} ★${stars}**${reason_part}${conf_note}"
+    def: verdict
+</script>
+
+<script>
+/* =========================================================================
+ * AIbaarAI — Cooperative, Provenance-first RAG Chat + Template Document Builder
+ *
+ * External files: marked.min.js (required), transformers.min.js (optional),
+ *                 mermaid.min.js (optional)
+ * Optional uploads: thesaurus.md, template.md
+ *
+ * FLOWS: every pass, retrieval parameter and prompt lives in the three
+ * <script type="text/plain" id="flow-…"> blocks above (PDL-style, TOON syntax):
+ *   flow-chat        pass 0 → retrieval(+rerank) → pass 1 → absence scan → pass 2 → pass 3
+ *   flow-doc_prompt  ```prompt block: passes 0-1 + research + rewrite
+ *   flow-doc_eval    ```evaluation block: one rubric row (optional do-rag lookup)
+ *   flow-switch / *_switch   Granite Switch variants (picked automatically when the llama.cpp
+ *                    "Granite Switch" box is on): aLoRA adapters + raw /completion with KV-cache reuse.
+ *                    New step keys: llm `convo`/`then`/`continue`/`slot`; kinds `adapter` and `decide`.
+ *                    Console: Switch.selfTest() checks every adapter against your GGUF.
+ * Steps hand results to later steps through variables (`def:` → ${var}).
+ * In a template, a prompt block's output is available to later blocks as
+ * $1, $2 … (n-th prompt block), $prev, or $name when the block has `as: name`.
+ *
+ * Modules: Config, Toon/Flow, State, Cache, Chunker, Backends, Retrieval,
+ *           Thesaurus, UI, NLP, Pipeline, Doc, Setup, Events, Init
+ * =========================================================================*/
+
+// ── CONFIG ────────────────────────────────────────────────────────────────────
+// Ingest-time settings only, identical for every backend. Query-time settings
+// (retrieval size, RRF, token budgets, history length …) live in the flows.
+const Config = Object.freeze({
+  // Body chunk size budget. Tuned so the post-chunking token guard below acts
+  // as a rare safety net rather than the primary size mechanism. Markdown-heavy
+  // text runs ~2-2.5 chars/token in BPE/WordPiece tokenizers, NOT the ~3.5-4 of
+  // plain prose.
+  CHUNK_MAX_CHARS:           900,
+  CHUNK_SLICE:               800,
+  CHUNK_OVERLAP:             150,
+  // If structural chunking produces ≤2 chunks averaging above this size, the
+  // document likely has no usable headings/paragraph breaks ("dirty file") —
+  // fall back to overlapping fixed-size slices.
+  CHUNK_DIRTY_THRESHOLD:    2500,
+  EMBED_BATCH_SIZE:           16,   // texts per embedding API request (API backends)
+
+  // ── Embedding token-limit guard (same rule for every backend) ───────────
+  // Multilingual embedders hard-cap input at 512 tokens; some servers BLOCK
+  // the request instead of truncating. Every chunk is measured in tokens:
+  // exactly with the loaded tokenizer (WebGPU), otherwise with a
+  // density-aware estimate that is never lower than chars / (CEILING/LIMIT).
+  EMBED_TOKEN_LIMIT:         480,   // hard limit 512, 32-token safety margin
+  EMBED_TOKEN_CHAR_CEILING:  950,   // 480 tokens * ~2.0 chars/token (worst case); also the re-split slice size
+});
+
+// ── FLOWS: TOON parser + PDL-style flow engine ───────────────────────────────
+/**
+ * The flow definitions live in <script type="text/plain" id="flow-…"> blocks
+ * above (one per flow). This section only parses and executes them — it holds
+ * no prompt text and no pass parameters.
+ */
+
+/** Minimal TOON reader: objects, `key[N]: a,b` arrays, `key[N]{f,…}:` tables,
+ *  `- ` lists, plus `key: |` text blocks. Declared array lengths are verified. */
+const Toon = {
+  KEY: /^([A-Za-z_][\w.\-]*)(?:\[(\d*)(\|)?\])?(?:\{([^}]*)\})?:(?:\s+(.*))?$/,
+
+  scalar(s) {
+    s = s.trim();
+    if (s === '') return '';
+    if (s[0] === '"') { try { return JSON.parse(s); } catch { return s.slice(1, -1); } }
+    if (s === 'true') return true;
+    if (s === 'false') return false;
+    if (s === 'null') return null;
+    if (/^-?\d+(\.\d+)?$/.test(s)) return Number(s);
+    return s;
+  },
+
+  split(s, delim) {
+    const out = []; let cur = '', q = false;
+    for (let k = 0; k < s.length; k++) {
+      const ch = s[k];
+      if (ch === '"' && s[k - 1] !== '\\') { q = !q; cur += ch; }
+      else if (ch === delim && !q) { out.push(cur); cur = ''; }
+      else cur += ch;
+    }
+    out.push(cur);
+    return out;
+  },
+
+  parse(src) {
+    const lines = src.replace(/\t/g, '  ').split('\n').map(raw => {
+      const r = raw.replace(/\s+$/, ''), t = r.trimStart();
+      return { indent: r.length - t.length, text: t, raw: r };
+    });
+    let i = 0;
+    const fail = msg => { throw new Error('TOON regel ' + (i + 1) + ': ' + msg); };
+    const skipBlank = () => { while (i < lines.length && lines[i].text === '') i++; };
+    const isItem = L => L.text === '-' || L.text.startsWith('- ');
+
+    const blockText = parentIndent => {
+      const out = []; let bi = null;
+      while (i < lines.length) {
+        const L = lines[i];
+        if (L.text === '') { out.push(''); i++; continue; }
+        if (L.indent <= parentIndent) break;
+        if (bi === null) bi = L.indent;
+        out.push(L.raw.slice(Math.min(bi, L.indent)));
+        i++;
+      }
+      while (out.length && out[out.length - 1] === '') out.pop();
+      return out.join('\n');
+    };
+
+    const parseNested = indent => {
+      skipBlank();
+      if (i >= lines.length || lines[i].indent <= indent) return null;
+      return isItem(lines[i]) ? parseList(lines[i].indent) : parseObject(lines[i].indent);
+    };
+
+    const parseList = indent => {
+      const arr = [];
+      for (;;) {
+        skipBlank();
+        if (i >= lines.length) break;
+        const L = lines[i];
+        if (L.indent < indent) break;
+        if (L.indent > indent || !isItem(L)) { if (L.indent === indent) break; fail('onverwachte inspringing'); }
+        const rest = L.text === '-' ? '' : L.text.slice(2);
+        if (rest === '') { i++; arr.push(parseNested(indent)); }
+        else if (Toon.KEY.test(rest)) {
+          lines[i] = { indent: indent + 2, text: rest, raw: ' '.repeat(indent + 2) + rest };
+          arr.push(parseObject(indent + 2));
+        } else { i++; arr.push(Toon.scalar(rest)); }
+      }
+      return arr;
+    };
+
+    const parseObject = indent => {
+      const obj = {};
+      for (;;) {
+        skipBlank();
+        if (i >= lines.length) break;
+        const L = lines[i];
+        if (L.indent < indent) break;
+        if (L.indent > indent) fail('onverwachte inspringing bij "' + L.text + '"');
+        const m = L.text.match(Toon.KEY);
+        if (!m) fail('geen "sleutel: waarde" — "' + L.text + '"');
+        i++;
+        const [, key, n, pipe, fields, rest = ''] = m;
+        const isArr = L.text.slice(key.length).startsWith('[');
+        const delim = pipe ? '|' : ',';
+        if (fields !== undefined) {                       // tabular array
+          const cols = fields.split(',').map(s => s.trim());
+          const rows = [];
+          while (i < lines.length && (lines[i].text === '' || lines[i].indent > indent)) {
+            if (lines[i].text !== '') rows.push(Object.fromEntries(
+              Toon.split(lines[i].text, delim).map((c, k) => [cols[k], Toon.scalar(c)])));
+            i++;
+          }
+          obj[key] = rows;
+        } else if (isArr) {
+          obj[key] = rest !== '' ? Toon.split(rest, delim).map(Toon.scalar)
+                                 : (parseNested(indent) || []);
+        } else if (rest === '|') obj[key] = blockText(indent);
+        else if (rest === '') obj[key] = parseNested(indent) ?? '';
+        else obj[key] = Toon.scalar(rest);
+        if (isArr && n !== '' && n !== undefined && obj[key].length !== Number(n))
+          fail('"' + key + '" meldt ' + n + ' items maar bevat er ' + obj[key].length);
+      }
+      return obj;
+    };
+
+    const root = parseObject(0);
+    skipBlank();
+    if (i < lines.length) fail('onverwachte inspringing bij "' + lines[i].text + '"');
+    return root;
+  },
+};
+
+/** Flow engine: runs a parsed flow top to bottom over one variable scope. */
+const Flow = {
+  _flows: {}, _steps: {},
+
+  load(name) {
+    if (!this._flows[name]) {
+      const el = document.getElementById('flow-' + name);
+      if (!el) throw new Error('Flow "' + name + '" niet gevonden in index.html');
+      try { this._flows[name] = Toon.parse(el.textContent); }
+      catch (e) { throw new Error('Flow "' + name + '": ' + e.message); }
+    }
+    return this._flows[name];
+  },
+
+  /** Steps of a flow with `use: flow.id` resolved (base step + local overrides). */
+  steps(name, depth = 0) {
+    if (this._steps[name]) return this._steps[name];
+    if (depth > 4) throw new Error('Flow "' + name + '": use-lus');
+    const out = this.load(name).steps.map(s => {
+      if (!s.use) return s;
+      const [fl, id] = String(s.use).split('.');
+      const base = this.steps(fl, depth + 1).find(x => x.id === id);
+      if (!base) throw new Error('Flow "' + name + '": use "' + s.use + '" bestaat niet');
+      const { use, ...over } = s;
+      return { ...base, ...over };
+    });
+    return (this._steps[name] = out);
+  },
+
+  // ── variable scope ────────────────────────────────────────────────────────
+  lookup(V, path) { return String(path).split('.').reduce((o, k) => (o == null ? undefined : o[k]), V); },
+  str(v) {
+    if (v == null) return '';
+    if (Array.isArray(v)) return v.join('; ');
+    return typeof v === 'object' ? JSON.stringify(v) : String(v);
+  },
+  /** ${var} / ${var.path}. Single pass: substituted values are never re-expanded. */
+  interp(tpl, V) {
+    return tpl == null ? '' : String(tpl).replace(/\$\{([\w.]+)\}/g, (_, p) => this.str(this.lookup(V, p)));
+  },
+  truthy(V, spec) {
+    if (typeof spec !== 'string') return !!spec;
+    const neg = spec[0] === '!', v = this.lookup(V, neg ? spec.slice(1) : spec);
+    const t = Array.isArray(v) ? v.length > 0 : typeof v === 'string' ? v.trim().length > 0 : !!v;
+    return neg ? !t : t;
+  },
+
+  /**
+   * Run a flow. Returns {stopped, reply, vars}.
+   * hooks (all optional): status(label) · before(id,V,step) · after(id,V,step) ·
+   *   chunk(id,text,accumulated,V) · reuse() · phase(name) · history()
+   */
+  /** Switch mode runs the `<name>_switch` flow when one exists; classic flows stay untouched. */
+  pick(name) {
+    return State.switch && document.getElementById('flow-' + name + '_switch') ? name + '_switch' : name;
+  },
+
+  /** Assign into the variable scope; `a.b` creates/extends the object `a`. */
+  assign(V, path, val) {
+    const keys = String(path).split('.'), last = keys.pop();
+    const o = keys.reduce((o, k) => (o[k] = (o[k] && typeof o[k] === 'object') ? o[k] : {}), V);
+    o[last] = val;
+  },
+
+  async run(name, input, hooks = {}) {
+    name = this.pick(name);
+    const flow = this.load(name), steps = this.steps(name);
+    const V = { ...(flow.consts || {}), ...input };
+    for (const step of steps) {
+      if (step.when !== undefined && !this.truthy(V, step.when)) continue;
+      const handler = this['_' + step.kind];
+      if (!handler) throw new Error('Flow "' + name + '": onbekend stap-type "' + step.kind + '" (' + step.id + ')');
+      if (step.label && hooks.status) hooks.status(step.label, step);
+      if (hooks.before) await hooks.before(step.id, V, step);
+      const stopReply = await handler.call(this, step, V, hooks, steps);
+      if (stopReply !== undefined) return { stopped: true, reply: stopReply, vars: V };
+      if (hooks.after) await hooks.after(step.id, V, step);
+    }
+    return { stopped: false, vars: V };
+  },
+
+  // ── step kinds ────────────────────────────────────────────────────────────
+  /** set: def = from|value, with unless / default / wrap(%s) */
+  _set(step, V) {
+    let val = step.value !== undefined ? this.interp(step.value, V) : this.str(this.lookup(V, step.from));
+    if (step.line) val = val.replace(/\s+/g, ' ').trim();
+    if (step.unless !== undefined && val === String(step.unless)) val = '';
+    if (!val.trim()) val = step.default !== undefined ? this.interp(step.default, V) : '';
+    else if (step.wrap) val = String(step.wrap).replace('%s', () => val);
+    V[step.def] = val;
+  },
+
+  /** expand: thesaurus-expand the union of the listed list-variables */
+  _expand(step, V) {
+    const list = (step.from || []).flatMap(p => { const v = this.lookup(V, p); return Array.isArray(v) ? v : []; });
+    V[step.def] = Thesaurus.expandTerms(list);
+  },
+
+  /** retrieve: hybrid RRF + optional rerank (or reuse of the previous result) */
+  async _retrieve(step, V, hooks) {
+    let chunks = step.reuse === 'prior' && hooks.reuse ? hooks.reuse() : null;
+    V.reused = !!chunks;
+    if (!chunks) chunks = await Retrieval.search(this.interp(step.query, V), V[step.terms] || [], { ...step, docs: V[step.docs] }, hooks.phase);
+    V[step.def] = chunks;
+    if (!chunks.length && step.on_empty === 'stop') return this.interp(step.reply, V);
+  },
+
+  /** context: chunks → "CONTEXT:" text block (neighbour expansion per backend) */
+  _context(step, V) { V[step.def] = Pipeline.buildContext(V[step.from], step); },
+
+  _msgs(step, V, hooks) {
+    const m = [];
+    if (step.system) m.push({ role: 'system', content: this.interp(step.system, V) });
+    if (step.history === 'chat' && hooks.history)
+      m.push(...hooks.history().slice(-(step.history_turns || 8) * 2));
+    m.push({ role: 'user', content: this.interp(step.user, V) });
+    return m;
+  },
+
+  _expect(step, obj) {
+    const out = {};
+    obj = obj && typeof obj === 'object' ? obj : {};
+    for (const r of step.expect || []) {
+      let v = obj[r.field];
+      if (r.type === 'list') v = Array.isArray(v) ? v : [];
+      else if (r.type === 'enum') {
+        if (!String(r.allowed).split('|').includes(v)) {
+          if (v) console.warn('[' + step.id + '] Invalid ' + r.field + ' "' + v + '" — falling back to ' + r.fallback);
+          v = r.fallback;
+        }
+      } else v = (typeof v === 'string' && v.trim()) ? v.trim() : r.fallback;
+      out[r.field] = v;
+    }
+    return out;
+  },
+
+  /** First balanced {...} in text that parses as JSON (string-aware), else null. */
+  _firstObject(text) {
+    const a = text.indexOf('{'); if (a < 0) return null;
+    let depth = 0, str = false, esc = false;
+    for (let i = a; i < text.length; i++) {
+      const ch = text[i];
+      if (str) { if (esc) esc = false; else if (ch === '\\') esc = true; else if (ch === '"') str = false; continue; }
+      if (ch === '"') str = true;
+      else if (ch === '{') depth++;
+      else if (ch === '}' && --depth === 0) { try { return JSON.parse(text.slice(a, i + 1)); } catch { return null; } }
+    }
+    return null;
+  },
+
+  _parse(step, raw) {
+    if (step.parse === 'extract') return extractJSON(raw);
+    if (step.parse === 'json') {
+      const clean = raw.trim().replace(/^`{3}(?:json)?\s*/i, '').replace(/\s*`{3}\s*$/, '');
+      try { return this._expect(step, JSON.parse(clean)); }
+      catch (e) {
+        // models sometimes add text after the JSON: retry on the first balanced {...}
+        const obj = this._firstObject(clean);
+        if (obj) return this._expect(step, obj);
+        console.warn('[' + step.id + '] parse failed:', e); return null;
+      }
+    }
+    return raw;
+  },
+
+  // ── Granite Switch: conversations, prompt rendering, KV-cache friendly calls ──
+  /** Named conversation (flow-switch → convos) → chat messages. Pass-specific text goes in `then`, so the convo itself is a byte-stable prefix. */
+  _convo(name, V, hooks) {
+    const c = (this.load('switch').convos || {})[name];
+    if (!c) throw new Error('Convo "' + name + '" niet gevonden in flow-switch');
+    const m = [];
+    if (c.system) m.push({ role: 'system', content: this.interp(c.system, V) });
+    if (c.turns === 'chat' && hooks.turns) m.push(...hooks.turns().slice(-(c.turns_max || 6)));
+    m.push({ role: 'user', content: this.interp(c.user, V) });
+    return m;
+  },
+
+  /** Messages for a raw (Switch) call: convo + optional trailing user turn, or the plain turns of a previous `decide` + its label + a follow-up. */
+  _convoMsgs(step, V, hooks) {
+    const m = step.continue
+      ? [...V[step.continue + '_msgs'], { role: 'assistant', content: V[step.continue + '_label'] }]
+      : this._convo(step.convo, V, hooks);
+    if (step.then) m.push({ role: 'user', content: this.interp(step.then, V) });
+    return m;
+  },
+
+  /** One model call for an `llm` step → raw text. Convo steps go raw to /completion (cache_prompt + pinned slot); others use the classic chat API. */
+  async _infer(step, V, hooks) {
+    if (step.convo || step.continue) {
+      const prompt = Granite.render(this._convoMsgs(step, V, hooks));
+      const o = { slot: step.slot, label: step.id };
+      if (step.mode === 'stream') {
+        let acc = '';
+        const ret = await Switch.stream(prompt, { ...o, temperature: step.temperature ?? 0.3, n_predict: step.max_tokens || 1024 },
+          t => { acc += t; if (hooks.chunk) hooks.chunk(step.id, t, acc, V); });
+        return acc || ret || '';
+      }
+      return (await Switch.complete(prompt, { ...o, temperature: step.temperature ?? 0, n_predict: step.max_tokens || 400 })).text;
+    }
+    const msgs = this._msgs(step, V, hooks);
+    if (step.mode === 'stream') {
+      let acc = '';
+      const ret = await Backends.inferStream(msgs, t => { acc += t; if (hooks.chunk) hooks.chunk(step.id, t, acc, V); });
+      return acc || ret || '';
+    }
+    const extra = State.switch && step.slot ? { id_slot: Switch.slotId(step.slot) } : undefined;
+    return Backends.inferJSON(msgs, step.max_tokens, step.temperature, extra);
+  },
+
+  /** llm: one model call (complete|stream), optional parse / retry / fallback */
+  async _llm(step, V, hooks) {
+    let raw = '', parsed = null, ok = false;
+    try {
+      const attempts = 1 + (step.retry || 0);
+      for (let a = 0; a < attempts && !ok; a++) {
+        if (a) console.warn('[' + step.id + '] retry...');
+        raw = await this._infer(step, V, hooks);
+        parsed = this._parse(step, raw);
+        ok = step.valid === 'decision' ? !!(parsed && parsed.decision) : parsed != null;
+      }
+    } catch (e) {
+      if (step.on_error !== 'fallback' && step.on_error !== 'continue') throw e;
+      console.warn('[' + step.id + '] degrading:', e); parsed = null; raw = ''; ok = false;
+    }
+    V[step.def + '_raw'] = raw;
+    if (step.parse && !ok) {
+      if (step.on_fail === 'stop') { V[step.def] = parsed; return this.interp(step.reply, V); }
+      parsed = step.on_error === 'fallback' ? this._expect(step, {}) : (parsed || {});
+    }
+    V[step.def] = step.parse ? parsed : (ok ? raw : '');
+  },
+
+  /**
+   * adapter: one aLoRA call on a convo (control token goes in the tail only).
+   *  parse: label → V[def] = {[field]: value} from `labels[]{value,match}` regexes, else a JSON number vs `threshold` (high/low), else `fallback`
+   *  parse: field → value of JSON key `field` (plain text if the output is not JSON); dropped when longer than max_chars
+   */
+  async _adapter(step, V, hooks) {
+    let raw = '';
+    try {
+      const reg = Switch.adapter(step.adapter);
+      const msgs = this._convoMsgs(step, V, hooks);
+      const r = await Switch.complete(Switch.adapterPrompt(reg, msgs),
+        { slot: step.slot, temperature: 0, n_predict: step.max_tokens || 16, label: step.id });
+      raw = r.text;
+    } catch (e) {
+      if (step.on_error !== 'fallback') throw e;
+      console.warn('[' + step.id + '] degrading:', e);
+    }
+    V[step.def + '_raw'] = raw;
+    const t = raw.trim();
+    if (step.parse === 'field') {
+      let v = '';
+      try { v = JSON.parse(t.replace(/^`{3}(?:json)?\s*/i, '').replace(/\s*`{3}\s*$/, ''))[step.field]; }
+      catch { v = /^\s*[{[]/.test(t) ? '' : t.replace(/^["']|["']$/g, ''); }
+      v = typeof v === 'string' ? v.trim() : '';
+      if (step.max_chars && v.length > step.max_chars) v = '';
+      V[step.def] = v || (step.fallback ?? '');
+    } else {
+      let val;
+      for (const r of step.labels || []) if (new RegExp(r.match, 'i').test(t)) { val = r.value; break; }
+      if (val === undefined && step.threshold !== undefined) {
+        const n = t.match(/-?\d*\.?\d+/);
+        if (n) val = Number(n[0]) >= step.threshold ? step.high : step.low;
+      }
+      V[step.def] = { [step.field]: val !== undefined ? val : step.fallback };
+    }
+  },
+
+  /**
+   * decide: `decisions` aLoRA. Options get labels A,B,C…; the first generated token is the label, its probability
+   * over the option labels is read from n_probs. Writes def (= winning option key), `<id>_probs` {key: p},
+   * `<id>_pct` (winner, %), and `<id>_msgs` / `<id>_label` so a later `continue:` pass can reuse the same turns.
+   */
+  async _decide(step, V) {
+    const opts = (step.options || []).map((o, i) => ({ label: String.fromCharCode(65 + i), key: String(o.key), text: this.interp(o.text, V) }));
+    const body = 'Question:\n' + this.interp(step.question, V).trim() + '\n\nOptions:\n' +
+      opts.map(o => o.label + ': ' + o.text).join('\n') + '\n\nReply with exactly one option label.';
+    const first = { role: 'user', content: 'State:\n' + this.interp(step.state, V).trim() };
+    let best = null, probs = {};
+    try {
+      const reg = Switch.adapter(step.adapter || 'decisions');
+      const r = await Switch.complete(Switch.adapterPrompt(reg, [first, { role: 'user', content: body }], true),
+        { slot: step.slot, temperature: 0, n_predict: 1, n_probs: Switch.nProbs(opts.length), label: step.id });
+      const byLabel = Switch.labelProbs(r, opts.map(o => o.label));
+      best = opts.find(o => o.label === byLabel.best) || null;
+      opts.forEach(o => { probs[o.key] = byLabel.probs[o.label] || 0; });
+    } catch (e) {
+      if (step.on_error !== 'fallback') throw e;
+      console.warn('[' + step.id + '] degrading:', e);
+    }
+    const winner = best || opts.find(o => o.key === String(step.fallback)) || opts[0];
+    this.assign(V, step.def, best ? best.key : String(step.fallback ?? ''));
+    V[step.id + '_probs'] = probs;
+    V[step.id + '_pct'] = best ? Math.round((probs[best.key] || 0) * 100) : '';
+    V[step.id + '_label'] = winner ? winner.label : '';
+    V[step.id + '_msgs'] = [first, { role: 'user', content: body }];   // plain turns: no control token / marker
+  },
+
+  /** scan_retry: if `of` found no evidence, scan the whole corpus for the terms and re-ask once */
+  async _scan_retry(step, V, hooks, steps) {
+    const p1 = V[step.of] || {}, terms = V[step.terms] || [];
+    const noEvidence = !p1.citations?.length || new RegExp(step.no_evidence, 'i').test(p1.decision || '');
+    if (!noEvidence || !terms.length) return;
+    const find = id => steps.find(s => s.id === id);
+    const ls = find(step.of), rs = find(step.retrieve_step), cs = find(step.context_step);
+    const extras = Retrieval.checkAbsence(terms, V[rs.def], rs);
+    if (!extras.length) return;
+    const aug = [...V[rs.def], ...extras.slice(0, rs.top_k)];
+    const V2 = { ...V, [cs.def]: Pipeline.buildContext(aug, cs), extra_count: extras.length };
+    const ls2 = ls.convo ? { ...ls, then: ls.then + step.suffix } : { ...ls, user: ls.user + step.suffix };
+    const rp = extractJSON(await this._infer(ls2, V2, hooks));
+    if (rp?.citations?.length) {
+      V[rs.def] = aug; V[cs.def] = V2[cs.def]; V[step.of] = rp; V.scan_applied = true;
+    }
+  },
+
+  /**
+   * cites: normalise pass-1 citations to {document, chunkId} entries that really are in the context.
+   * Accepts chunkId / chunk_id / id / chunk / bare strings, case-insensitive or `_N` suffix matches; when nothing
+   * resolves, falls back to chunk ids mentioned anywhere in the raw output. Unknown ids are dropped, never invented.
+   */
+  _cites(step, V, hooks, steps) {
+    const p = V[step.of]; if (!p || typeof p !== 'object') return;
+    const cs = steps.find(x => x.id === step.context_step);
+    const valid = Pipeline.contextChunks(V.chunks || [], cs).map(c => ({ id: c.id, doc: c.docName }));
+    const resolve = raw => {
+      const id = String(raw ?? '').trim(); if (!id) return null;
+      return valid.find(v => v.id === id) || valid.find(v => v.id.toLowerCase() === id.toLowerCase())
+        || (valid.filter(v => v.id.endsWith('_' + id)).length === 1 ? valid.find(v => v.id.endsWith('_' + id)) : null);
+    };
+    const got = [];
+    for (const c of Array.isArray(p.citations) ? p.citations : []) {
+      const hit = resolve(typeof c === 'string' ? c : (c.chunkId ?? c.chunk_id ?? c.chunkID ?? c.chunkid ?? c.id ?? c.chunk));
+      if (hit && !got.some(g => g.chunkId === hit.id)) got.push({ document: hit.doc, chunkId: hit.id });
+    }
+    if (!got.length) {
+      const text = V[step.of + '_raw'] || '';
+      valid.filter(v => text.includes(v.id)).forEach(v => got.push({ document: v.doc, chunkId: v.id }));
+    }
+    if (!got.length || got.length !== (p.citations || []).length)
+      console.warn('[' + step.id + '] citations normalised:', JSON.stringify(p.citations), '→', got.map(g => g.chunkId));
+    p.citations = got;
+  },
+
+  /** pick: table[]{lang,text} -> text of the row whose lang equals V[from] (case-insensitive), else the "default" row */
+  _pick(step, V) {
+    const want = String(this.lookup(V, step.from) ?? '').trim().toLowerCase();
+    const rows = step.table || [];
+    const row = rows.find(r => String(r.lang).toLowerCase() === want)
+             || rows.find(r => String(r.lang).toLowerCase() === 'default') || rows[0];
+    V[step.def] = row ? String(row.text) : '';
+  },
+
+  /** require: stop the flow with `reply` unless the variable is non-empty */
+  _require(step, V) { if (!this.truthy(V, step.var)) return this.interp(step.reply, V); },
+};
+
+// ── STATE ──────────────────────────────────────────────────────────────────────
+const State = {
+  backend:     null,    // 'lmstudio' | 'llamacpp' | 'transformers'
+  // Per-function URLs — for LM Studio all three are equal;
+  // for llama.cpp each can point to a different port.
+  chatUrl:     'http://127.0.0.1:1234',
+  embedUrl:    'http://127.0.0.1:1234',
+  rerankUrl:   'http://127.0.0.1:1234',
+  chatModel:   '',
+  embedModel:  '',
+  rerankModel: '',
+
+  tjsTokenizer:       null,
+  tjsEmbedModel:      null,
+  tjsRerankTokenizer: null,
+  tjsRerankModel:     null,
+  tjsLLMPipeline:     null,
+  tjsMath:            null,
+  TextStreamer:       null,
+
+  chunks:         [],   // [{id, docName, text, vector, prevId, nextId}]
+  chatHistory:    [],
+  chatTurns:      [],   // plain {role,content} turns for query_rewrite (Switch mode)
+  switch:         false, // Granite Switch GGUF: adapter flows + raw /completion with KV-cache reuse
+  slotMain:       0,    // llama.cpp slot for grounded passes (-1 = let the server choose)
+  slotAux:        0,    // slot for short utility calls (pass 0, decisions, pass 3)
+  jsonState:      { intent: 'Onbekend', facts_gathered: [] },
+  lastChunks:     null,
+  forceNewSearch: false,
+  thesaurus:      null,
+
+  // Document builder
+  docRunning:        false,
+  docStopRequested:  false,
+  docResults:        {},   // Map<blockKey, outputText> — populated from localStorage on launch
+  docNotes:          {},   // Map<blockKey, {warnings:[], chunks:[{label,text,cited}]}> — shown under the block output, not part of $n
+  docProvenance:     [],   // [{type, model, embedModel, chunkIds, inputWords, outputWords, stars, ts}]
+};
+
+// ── MODULE: Cache ──────────────────────────────────────────────────────────────
+const Cache = {
+  DB_NAME: 'fietsbel-ce', DB_VERSION: 1, _db: null,
+
+  async open() {
+    if (this._db) return this._db;
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open(this.DB_NAME, this.DB_VERSION);
+      req.onupgradeneeded = ({ target: { result: db } }) => {
+        ['files','chunks'].forEach(s => {
+          if (!db.objectStoreNames.contains(s))
+            db.createObjectStore(s, { keyPath: s === 'chunks' ? 'id' : 'name' });
+        });
+        if (!db.objectStoreNames.contains('session'))
+          db.createObjectStore('session');
+      };
+      req.onsuccess  = ({ target: { result: db } }) => { this._db = db; resolve(db); };
+      req.onerror    = ({ target: { error } })      => reject(error);
+    });
+  },
+  async _put(store, value, key) {
+    const db = await this.open();
+    return new Promise((resolve, reject) => {
+      const req = key !== undefined
+        ? db.transaction(store,'readwrite').objectStore(store).put(value, key)
+        : db.transaction(store,'readwrite').objectStore(store).put(value);
+      req.onsuccess = () => resolve(); req.onerror = () => reject(req.error);
+    });
+  },
+  async _get(store, key) {
+    const db = await this.open();
+    return new Promise((resolve, reject) => {
+      const req = db.transaction(store,'readonly').objectStore(store).get(key);
+      req.onsuccess = () => resolve(req.result); req.onerror = () => reject(req.error);
+    });
+  },
+  async _getAll(store) {
+    const db = await this.open();
+    return new Promise((resolve, reject) => {
+      const req = db.transaction(store,'readonly').objectStore(store).getAll();
+      req.onsuccess = () => resolve(req.result); req.onerror = () => reject(req.error);
+    });
+  },
+  async clear() {
+    const db = await this.open();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(['files','chunks','session'],'readwrite');
+      ['files','chunks','session'].forEach(s => tx.objectStore(s).clear());
+      tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error);
+    });
+  },
+  async saveSession(cfg) { return this._put('session', { ...cfg, savedAt: Date.now() }, 'config'); },
+  async loadSession()    { return this._get('session', 'config'); },
+  async saveFile(name, text) { return this._put('files', { name, text }); },
+  async loadFiles()      { return this._getAll('files'); },
+  async saveChunks(chunks) {
+    const db = await this.open();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('chunks','readwrite');
+      const store = tx.objectStore('chunks');
+      store.clear();
+      chunks.forEach(c => store.put({
+        id: c.id, docName: c.docName, text: c.text,
+        vector: Array.from(c.vector),
+        prevId: c.prevId ?? null, nextId: c.nextId ?? null,
+      }));
+      tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error);
+    });
+  },
+  async loadChunks() { return this._getAll('chunks'); },
+};
+
+// ── MODULE: Chunker ────────────────────────────────────────────────────────────
+const Chunker = {
+  /**
+   * Fallback for "dirty" files: no usable heading/paragraph structure.
+   * Fixed-size overlapping slices of raw text, no markdown-awareness.
+   * This is the safety net — clean, heading-structured markdown is strongly
+   * preferred and produces much better retrieval (see md-hint popover).
+   */
+  chunkFallback(text, filename) {
+    const { CHUNK_SLICE: S, CHUNK_OVERLAP: O } = Config;
+    const chunks = [];
+    let idx = 0;
+    for (let s = 0; s < text.length; s += (S - O)) {
+      const slice = text.slice(s, s + S).trim();
+      if (slice.length > 20) chunks.push({ id: `${filename}_${idx++}`, text: slice });
+      if (s + S >= text.length) break;
+    }
+    if (!chunks.length && text.trim()) chunks.push({ id: `${filename}_0`, text: text.trim() });
+    return chunks;
+  },
+
+  chunk(text, filename) {
+    if (typeof marked === 'undefined' || !marked.lexer) return this.chunkFallback(text, filename);
+
+    const tokens = marked.lexer(text), chunks = [];
+    let idx = 0, hStack = ['','',''], bodyToks = [];
+    const accLen = () => bodyToks.reduce((s,t) => s+(t.raw||'').length, 0);
+    const flush  = () => {
+      const body = bodyToks.map(t=>t.raw||'').join('').trim();
+      if (body.length < 20) { bodyToks=[]; return; }
+      const crumb = hStack.map((h,i) => h ? '#'.repeat(i+1)+' '+h : null)
+        .filter(Boolean).join('\n');
+      chunks.push({ id:`${filename}_${idx++}`, text: crumb ? crumb+'\n\n'+body : body });
+      bodyToks=[];
+    };
+    for (const tok of tokens) {
+      if (tok.type==='heading' && tok.depth<=3) {
+        if (bodyToks.length) flush();
+        hStack[tok.depth-1] = tok.text||'';
+        for (let d=tok.depth; d<3; d++) hStack[d]='';
+      } else {
+        const raw = tok.raw||'';
+        if (raw.length > Config.CHUNK_MAX_CHARS) {
+          // Oversized single token (typically: no blank lines to split on).
+          // Flush any pending accumulator first, then slice this token directly
+          // with overlap — bypasses the accumulator entirely so chunk sizes
+          // and overlap stay correct regardless of token size.
+          if (bodyToks.length) flush();
+          const {CHUNK_SLICE:S,CHUNK_OVERLAP:O} = Config;
+          const crumb = hStack.map((h,i)=>h?'#'.repeat(i+1)+' '+h:null).filter(Boolean).join('\n');
+          for (let s=0; s<raw.length; s+=(S-O)) {
+            const slice=raw.slice(s,s+S).trim();
+            if (slice.length>20)
+              chunks.push({ id:`${filename}_${idx++}`, text: crumb?crumb+'\n\n'+slice:slice });
+            if (s+S>=raw.length) break;
+          }
+        } else {
+          bodyToks.push(tok);
+          if (accLen()>Config.CHUNK_MAX_CHARS) flush();
+        }
+      }
+    }
+    flush();
+
+    if (!chunks.length) return this.chunkFallback(text, filename);
+
+    // Dirty-file heuristic: structural chunking produced very few, very large
+    // chunks — likely a wall of text with no headings or blank lines at all.
+    // Overlapping fixed-size slices give better retrieval granularity than
+    // one or two giant chunks.
+    const avgLen = chunks.reduce((s,c)=>s+c.text.length,0) / chunks.length;
+    if (chunks.length <= 2 && text.length > Config.CHUNK_DIRTY_THRESHOLD
+        && avgLen > Config.CHUNK_DIRTY_THRESHOLD) {
+      console.warn(`[Chunker] "${filename}" produced ${chunks.length} oversized chunk(s) ` +
+        `(avg ${Math.round(avgLen)} chars) — falling back to overlapping slices. ` +
+        `Add headings/blank lines for smarter chunking (see ⓘ).`);
+      return this.chunkFallback(text, filename);
+    }
+
+    return chunks;
+  },
+
+  /**
+   * Tokens in `text`: exact via the loaded tokenizer (WebGPU path), otherwise
+   * a density-aware estimate. Returns {n, exact}.
+   */
+  tokenCount(text) {
+    if (State.backend === 'transformers' && State.tjsTokenizer) {
+      try {
+        const ids = State.tjsTokenizer(text).input_ids;
+        const n = ids.size ?? ids.length ?? ids.data?.length;
+        if (n != null) return { n, exact: true };
+      } catch {}
+    }
+    return { n: this.estimateTokens(text), exact: false };
+  },
+
+  /**
+   * WordPiece-style estimate for backends without a client-side tokenizer:
+   * letter runs ≈ 1 token per 3 letters, digit runs ≈ 1 per 2 digits, each
+   * punctuation/symbol = 1 token (tables, codes and numbers are token-dense).
+   * Floored at chars / (CEILING/LIMIT), so it is never less strict than the
+   * old fixed char ceiling.
+   */
+  estimateTokens(text) {
+    let n = 2; const re = /[A-Za-zÀ-ÿ]+|\d+|[^\sA-Za-zÀ-ÿ\d]/g; let m;
+    while ((m = re.exec(text))) {
+      const t = m[0];
+      if (/^\d/.test(t)) n += Math.ceil(t.length / 2);
+      else if (/^[A-Za-zÀ-ÿ]/.test(t)) n += Math.ceil(t.length / 3);
+      else n += 1;
+    }
+    return Math.max(n, Math.ceil(text.length / (Config.EMBED_TOKEN_CHAR_CEILING / Config.EMBED_TOKEN_LIMIT)));
+  },
+
+  /**
+   * Hard post-chunking guard, one rule for every backend: any chunk over
+   * EMBED_TOKEN_LIMIT tokens is re-split (breadcrumb kept on each piece,
+   * suffixed ids "_3a", "_3b"). Token counting is exact where a tokenizer is
+   * loaded and estimated elsewhere (see tokenCount).
+   */
+  async enforceTokenLimit(chunks) {
+    const out = []; let resplitCount = 0, exact = 0, ratioSum = 0, ratioN = 0;
+
+    for (const c of chunks) {
+      const t = this.tokenCount(c.text);
+      if (t.exact) { exact++; if (ratioN < 200 && t.n) { ratioSum += this.estimateTokens(c.text) / t.n; ratioN++; } }
+      if (t.n <= Config.EMBED_TOKEN_LIMIT) { out.push(c); continue; }
+
+      resplitCount++;
+      // Re-split: separate breadcrumb (lines starting with #) from body,
+      // slice the body into pieces under the char ceiling, re-attach the breadcrumb.
+      const lines = c.text.split('\n');
+      let splitAt = 0;
+      while (splitAt < lines.length && /^#{1,3}\s/.test(lines[splitAt])) splitAt++;
+      while (splitAt < lines.length && lines[splitAt].trim() === '') splitAt++;
+      const breadcrumb = lines.slice(0, splitAt).join('\n').trim();
+      const body = lines.slice(splitAt).join('\n').trim();
+
+      const budget = Math.max(200, Config.EMBED_TOKEN_CHAR_CEILING - breadcrumb.length - 4);
+      const { CHUNK_OVERLAP: O } = Config;
+      let pieceIdx = 0;
+      for (let s = 0; s < body.length; s += (budget - O)) {
+        const slice = body.slice(s, s + budget).trim();
+        if (slice.length < 20) { if (s + budget >= body.length) break; continue; }
+        const pieceText = breadcrumb ? breadcrumb + '\n\n' + slice : slice;
+        out.push({ ...c, id: c.id + '_' + String.fromCharCode(97 + pieceIdx), text: pieceText });
+        pieceIdx++;
+        if (s + budget >= body.length) break;
+      }
+    }
+
+    if (resplitCount > 0)
+      console.warn(`[Chunker] ${resplitCount} chunk(s) exceeded ${Config.EMBED_TOKEN_LIMIT} tokens ` +
+        `(${exact ? 'exact tokenizer' : 'estimated'}) and were re-split. Total chunks: ${chunks.length} → ${out.length}.`);
+    if (ratioN) console.log(`[Chunker] estimator calibration: estimate/exact = ${(ratioSum / ratioN).toFixed(2)} over ${ratioN} chunks ` +
+      `(≥1.0 = safe side; estimate is what non-WebGPU backends use).`);
+    return out;
+  },
+
+  /** The one ingest path for every backend: structural chunk → token guard → link neighbours. */
+  async process(text, filename) {
+    const structural = this.chunk(text, filename);
+    const raw = await this.enforceTokenLimit(structural);
+    raw.forEach((c, i) => {
+      c.docName = filename;
+      c.prevId = i > 0 ? raw[i - 1].id : null;
+      c.nextId = i < raw.length - 1 ? raw[i + 1].id : null;
+    });
+    console.log(`[Chunker] "${filename}": ${structural.length} structural → ${raw.length} final chunks`);
+    return raw;
+  },
+};
+
+// ── MODULE: Backends ───────────────────────────────────────────────────────────
+const Backends = {
+  async embed(text, role='document') {
+    return State.backend==='transformers' ? this._tjs.embed(text,role) : this._api.embed(text,role);
+  },
+  async embedBatch(texts, role='document') {
+    if (State.backend==='transformers') {
+      const r=[]; for (const t of texts) r.push(await this._tjs.embed(t,role)); return r;
+    }
+    return this._api.embedBatch(texts, role);
+  },
+  async rerank(query, candidates) {
+    if (State.backend==='transformers') return this._tjs.rerank(query,candidates);
+    if (State.backend==='llamacpp')     return this._api.rerank(query,candidates);
+    return candidates;
+  },
+  async inferJSON(messages, maxTokens=400, temperature=0.0, extra) {
+    return State.backend==='transformers'
+      ? this._tjs.inferJSON(messages,maxTokens)
+      : this._api.inferJSON(messages,maxTokens,temperature,extra);
+  },
+  async inferStream(messages, onChunk) {
+    if (State.backend==='transformers') return this._tjs.inferStream(messages,onChunk);
+    if (State.backend==='llamacpp')     return this._api.inferStreamSSE(messages,onChunk);
+    const full = await this._api.inferJSON(messages,1024,0.2); onChunk(full); return full;
+  },
+
+  _tjs: {
+    async embed(text, role) {
+      const pfx = role==='query' ? 'search_query: ' : 'search_document: ';
+      const inp = State.tjsTokenizer(pfx+text, {padding:true,truncation:true,max_length:512});
+      const {last_hidden_state} = await State.tjsEmbedModel(inp);
+      let emb = State.tjsMath.mean_pooling(last_hidden_state, inp.attention_mask);
+      emb = State.tjsMath.layer_norm(emb,[emb.dims[1]]);
+      return emb.normalize(2,-1).tolist()[0];
+    },
+    async rerank(query, candidates) {
+      if (!State.tjsRerankModel||!State.tjsRerankTokenizer) return candidates;
+      try {
+        const sigmoid = x => 1/(1+Math.exp(-x));
+        const inp = State.tjsRerankTokenizer(
+          candidates.map(()=>query),
+          {text_pair:candidates.map(c=>c.text),padding:true,truncation:true,max_length:512}
+        );
+        const {logits} = await State.tjsRerankModel(inp);
+        return candidates.map((c,i) => ({...c,score:sigmoid(Array.from(logits.data)[i])}))
+          .sort((a,b)=>b.score-a.score);
+      } catch(e) { console.warn('TJS reranker failed:',e); return candidates; }
+    },
+    async inferJSON(messages, maxTokens=400) {
+      const out = await State.tjsLLMPipeline(messages,
+        {max_new_tokens:maxTokens,do_sample:false,repetition_penalty:1.1});
+      const gen = out[0].generated_text;
+      return Array.isArray(gen) ? (gen.at(-1).content??'') : String(gen);
+    },
+    async inferStream(messages, onChunk) {
+      const streamer = new State.TextStreamer(State.tjsLLMPipeline.tokenizer,
+        {skip_prompt:true,skip_special_tokens:true,callback_function:t=>onChunk&&onChunk(t)});
+      const out = await State.tjsLLMPipeline(messages,
+        {max_new_tokens:1024,do_sample:false,repetition_penalty:1.15,streamer});
+      const gen = out[0].generated_text;
+      return Array.isArray(gen) ? (gen.at(-1).content??'') : String(gen);
+    },
+  },
+
+  _api: {
+    _pfx(role) {
+      const n = State.embedModel.toLowerCase().includes('nomic');
+      return n ? (role==='query' ? 'search_query: ' : 'search_document: ') : '';
+    },
+    async embed(text, role) {
+      const res = await fetch(State.embedUrl+'/v1/embeddings', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({model:State.embedModel,input:this._pfx(role)+text}),
+      });
+      return (await res.json()).data[0].embedding;
+    },
+    async embedBatch(texts, role) {
+      const pfx = this._pfx(role);
+      const res = await fetch(State.embedUrl+'/v1/embeddings', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({model:State.embedModel,input:texts.map(t=>pfx+t)}),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error?.message||`Embedding error ${res.status}`);
+      if (data.data.length!==texts.length)
+        throw new Error(`Embedding API: expected ${texts.length}, got ${data.data.length}`);
+      return data.data.sort((a,b)=>a.index-b.index).map(d=>d.embedding);
+    },
+    async rerank(query, candidates) {
+      if (!State.rerankModel) return candidates;
+      try {
+        const res = await fetch(State.rerankUrl+'/v1/rerank', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({model:State.rerankModel,query,
+            documents:candidates.map(c=>c.text),top_n:candidates.length}),
+        });
+        if (!res.ok) throw new Error(`Rerank HTTP ${res.status}`);
+        return (await res.json()).results
+          .sort((a,b)=>b.relevance_score-a.relevance_score)
+          .map(r=>({...candidates[r.index],score:r.relevance_score}));
+      } catch(e) { console.warn('API reranker failed:',e); return candidates; }
+    },
+    async inferJSON(messages, maxTokens=400, temperature=0.0, extra) {
+      const res = await fetch(State.chatUrl+'/v1/chat/completions', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({model:State.chatModel,messages,temperature,
+          max_tokens:maxTokens,repetition_penalty:1.1,...(extra&&extra.id_slot>=0?{id_slot:extra.id_slot}:{})}),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error?.message||`API error ${res.status}`);
+      return data.choices[0].message.content;
+    },
+    async inferStreamSSE(messages, onChunk) {
+      const res = await fetch(State.chatUrl+'/v1/chat/completions', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        // NOTE: repetition_penalty intentionally omitted here. On some
+        // llama.cpp builds, repetition_penalty > 1.1 combined with
+        // stream:true has caused premature stop after a single token
+        // (observed: Pass 2 returning only "process"). Pass 1/3 use
+        // inferJSON with repetition_penalty:1.1 without this issue, so
+        // the streaming + higher-penalty combination is the suspect.
+        // temperature aligned with the working non-streaming passes.
+        body:JSON.stringify({model:State.chatModel,messages,
+          temperature:0.3,max_tokens:1024,stream:true}),
+      });
+      if (!res.ok) { const e2=await res.json().catch(()=>({})); throw new Error(e2.error?.message||`API error ${res.status}`); }
+      const reader=res.body.getReader(), decoder=new TextDecoder();
+      let buf='', accumulated='';
+      for(;;) {
+        const {done,value} = await reader.read(); if (done) break;
+        buf += decoder.decode(value,{stream:true});
+        const lines=buf.split('\n'); buf=lines.pop();
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const payload=line.slice(6).trim();
+          if (payload==='[DONE]') return accumulated;
+          try {
+            const delta=JSON.parse(payload).choices?.[0]?.delta?.content;
+            if (delta) { accumulated+=delta; onChunk(delta); }
+          } catch {}
+        }
+      }
+      return accumulated;
+    },
+  },
+};
+
+// ── MODULE: Granite + Switch ──────────────────────────────────────────────────
+/**
+ * Granite Switch (llama.cpp). Flows name a `convo`; the engine renders it to ONE raw Granite prompt and posts it
+ * to /completion with cache_prompt + a pinned slot, so every pass that starts with the same convo only
+ * evaluates its own tail. aLoRA adapters are active only from their control token onward, so the shared
+ * prefix stays valid base-model cache. Rule: a control token (or the `### DECISION` marker) may only appear
+ * in the tail of an adapter call — a later base-model pass must never contain one, or the adapter would stay on.
+ */
+const Granite = {
+  BOR: '<|start_of_role|>', EOR: '<|end_of_role|>', EOT: '<|end_of_text|>', sep: '\n',
+  /** msgs → prompt. gen.token replaces <|start_of_role|> of the generation prompt (aLoRA role trigger). */
+  render(msgs, gen = {}) {
+    let s = '';
+    for (const m of msgs) s += this.BOR + m.role + this.EOR + m.content + this.EOT + this.sep;
+    return s + (gen.token || this.BOR) + 'assistant' + this.EOR;
+  },
+};
+
+const Switch = {
+  slots: 1, last: null, log: [],
+
+  conf() { return Flow.load('switch'); },
+  get markerSep() { return this.conf().server?.marker_sep ?? '\n\n'; },
+  nProbs(n) { return Math.max(this.conf().server?.n_probs || 20, n + 8); },
+  slotId(kind) { return kind === 'aux' ? State.slotAux : State.slotMain; },
+
+  adapter(name) {
+    const a = (this.conf().adapters || []).find(x => x.name === name);
+    if (!a) throw new Error('Adapter "' + name + '" niet in flow-switch');
+    return a;
+  },
+
+  /** Prompt for an adapter call: `token` → control token in place of the assistant role marker; `marker` → text opening the last user turn. */
+  adapterPrompt(reg, msgs, decide = false) {
+    msgs = msgs.map(m => ({ ...m }));
+    if (reg.marker) { const l = msgs[msgs.length - 1]; l.content = reg.marker + (decide ? this.markerSep : ' ') + l.content; }
+    return Granite.render(msgs, reg.token ? { token: reg.token } : {});
+  },
+
+  _body(prompt, o, stream) {
+    const b = { prompt, n_predict: o.n_predict ?? 128, temperature: o.temperature ?? 0, cache_prompt: true,
+      stream: !!stream, stop: this.conf().server?.stop || [] };
+    const slot = o.slot !== undefined ? this.slotId(o.slot) : State.slotMain;
+    if (slot >= 0) b.id_slot = slot;
+    if (o.n_probs) b.n_probs = o.n_probs;
+    return b;
+  },
+
+  async _post(body) {
+    const go = () => fetch(State.chatUrl + '/completion', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    let res = await go();
+    if (!res.ok && body.id_slot !== undefined) {   // slot does not exist (server started with -np 1)? let the server choose
+      console.warn('[switch] id_slot ' + body.id_slot + ' rejected (HTTP ' + res.status + ') — slot pinning off');
+      State.slotMain = State.slotAux = -1; delete body.id_slot; res = await go();
+    }
+    if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error?.message || 'API error ' + res.status); }
+    return res;
+  },
+
+  _note(label, j, t0) {
+    const tm = j.timings || {};
+    const rec = { label: label || '', cached: tm.cache_n ?? j.tokens_cached ?? '?', fresh: tm.prompt_n ?? j.tokens_evaluated ?? '?',
+      gen: tm.predicted_n ?? j.tokens_predicted ?? '?', ms: Math.round(performance.now() - t0) };
+    this.last = rec; this.log.push(rec); if (this.log.length > 200) this.log.shift();
+    console.log('[switch] ' + rec.label + ': ' + rec.fresh + ' new prompt tokens, ' + rec.cached + ' from KV cache, ' + rec.gen + ' generated, ' + rec.ms + ' ms');
+  },
+
+  /** Non-streaming raw completion → {text, json}. */
+  async complete(prompt, o = {}) {
+    const t0 = performance.now();
+    const j = await (await this._post(this._body(prompt, o, false))).json();
+    this._note(o.label, j, t0);
+    return { text: j.content || '', json: j };
+  },
+
+  /** Streaming raw completion; onChunk(text) per piece. Returns the full text. */
+  async stream(prompt, o, onChunk) {
+    const t0 = performance.now();
+    const res = await this._post(this._body(prompt, o, true));
+    const reader = res.body.getReader(), decoder = new TextDecoder();
+    let buf = '', acc = '', fin = {};
+    for (;;) {
+      const { done, value } = await reader.read(); if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split('\n'); buf = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        try {
+          const j = JSON.parse(line.slice(6));
+          if (j.content) { acc += j.content; onChunk(j.content); }
+          if (j.stop) fin = j;
+        } catch {}
+      }
+    }
+    this._note(o.label, fin, t0);
+    return acc;
+  },
+
+  /** First-token probabilities over the option labels (renormalised). Handles old and new llama.cpp n_probs shapes. */
+  labelProbs(r, labels) {
+    const e = (r.json?.completion_probabilities || [])[0];
+    const arr = e ? (e.top_logprobs || e.top_probs || e.probs || []) : [];
+    const list = arr.map(t => ({ tok: String(t.token ?? t.tok_str ?? '').trim(), p: t.logprob !== undefined ? Math.exp(t.logprob) : (t.prob ?? 0) }));
+    const probs = {}; let sum = 0, best = null;
+    for (const l of labels) { probs[l] = list.filter(x => x.tok === l).reduce((m, x) => Math.max(m, x.p), 0); sum += probs[l]; }
+    if (sum > 0) { for (const l of labels) { probs[l] /= sum; if (best === null || probs[l] > probs[best]) best = l; } }
+    else { const f = (r.text || '').trim()[0]; if (labels.includes(f)) { best = f; probs[f] = 1; } }
+    return { best, probs };
+  },
+
+  // ── setup ───────────────────────────────────────────────────────────────────
+  /** Does this server look like a Granite Switch model? */
+  async detect(modelNames = []) {
+    if (modelNames.some(n => /switch|adapters?/i.test(n))) return true;
+    try {
+      const p = await (await fetch(State.chatUrl + '/props')).json();
+      return /switch|adapters?/i.test(String(p.model_path || p.model_alias || '')) || /answerability/.test(String(p.chat_template || ''));
+    } catch { return false; }
+  },
+
+  /** Slots, chat-template check, control-token check. Never fatal. */
+  async init() {
+    State.slotMain = 0; State.slotAux = 0;
+    try {
+      const p = await (await fetch(State.chatUrl + '/props')).json();
+      this.slots = p.total_slots || 1;
+      State.slotAux = this.slots > 1 ? 1 : 0;
+      if (this.slots < 2) console.info('[switch] 1 slot: short utility calls share the slot with the grounded passes. Start llama-server with -np 2 (and a larger -c) so pass 0 / decisions / pass 3 never evict the cached document prefix.');
+    } catch {}
+    await this.calibrate();
+    await this.verifyTokens();
+  },
+
+  /** Compare the built-in renderer with the server's own template (/apply-template); adopt its turn separator if that is the only difference. */
+  async calibrate() {
+    const msgs = [{ role: 'system', content: '§S' }, { role: 'user', content: '§U' }];
+    const tail = Granite.BOR + 'assistant' + Granite.EOR;
+    const norm = t => String(t).replace(tail, '');
+    try {
+      const res = await fetch(State.chatUrl + '/apply-template', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: msgs }) });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const { prompt } = await res.json();
+      if (norm(prompt) === norm(Granite.render(msgs))) { console.info('[switch] chat template matches the built-in Granite renderer'); return true; }
+      const m = String(prompt).match(/§S<\|end_of_text\|>([\s\S]*?)<\|start_of_role\|>user/);
+      if (m) { Granite.sep = m[1]; if (norm(prompt) === norm(Granite.render(msgs))) { console.info('[switch] turn separator calibrated:', JSON.stringify(m[1])); return true; } }
+      console.warn('[switch] the server chat template differs from Granite.render() — prompts may be off', { server: prompt, local: Granite.render(msgs) });
+    } catch (e) { console.info('[switch] /apply-template unavailable — using the built-in Granite renderer (' + e.message + ')'); }
+    return false;
+  },
+
+  /** Every control token must tokenize to exactly ONE special token. */
+  async verifyTokens() {
+    for (const a of this.conf().adapters || []) {
+      for (const [kind, txt] of [['token', a.token], ['marker', a.marker]]) {
+        if (!txt) continue;
+        try {
+          const r = await (await fetch(State.chatUrl + '/tokenize', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content: txt, add_special: false, parse_special: true }) })).json();
+          if (kind === 'token' && r.tokens?.length !== 1)
+            console.warn('[switch] ' + a.name + ': control token ' + txt + ' is not ONE token (' + r.tokens?.length + ') — wrong model, or fix the adapters table in flow-switch', r.tokens);
+          else console.info('[switch] ' + a.name + ' ' + kind + ' ' + txt + ' → token ids', r.tokens);
+        } catch {}
+      }
+    }
+  },
+
+  /** Console diagnostic: Switch.selfTest() — runs each adapter on a toy case and prints answers + KV-cache numbers. */
+  async selfTest() {
+    const ctx = 'CONTEXT:\n[Doc: beleid.md, ChunkId: beleid.md_1]\nDe thuiswerkvergoeding bedraagt 2 euro per dag. Aanvragen kan via HR.';
+    const steps = Flow.steps('chat_switch'), get = id => steps.find(s => s.id === id), rows = [];
+    const t = async (name, step, V, hooks = {}) => {
+      await (step.kind === 'decide' ? Flow._decide(step, V, hooks) : Flow._adapter(step, V, hooks));
+      rows.push({ test: name, out: step.kind === 'decide' ? JSON.stringify(V[step.id + '_probs']) : JSON.stringify(V[step.def]),
+        raw: V[step.def + '_raw'] ?? '', cached: this.last?.cached, new: this.last?.fresh, ms: this.last?.ms });
+    };
+    await t('answerability (should be yes)', get('judge'), { context: ctx, standalone: 'Hoeveel is de thuiswerkvergoeding?' });
+    await t('answerability again (cache hit expected)', get('judge'), { context: ctx, standalone: 'Hoeveel is de thuiswerkvergoeding?' });
+    await t('answerability (should be no)', get('judge'), { context: ctx, standalone: 'Wat is de hoofdstad van Frankrijk?' });
+    await t('decisions: shape', get('shape'), { standalone: 'Hoe lang heb ik om bezwaar te maken?' });
+    await t('decisions: language', get('language'), { standalone: 'Wie is verantwoordelijk voor de back-ups?' });
+    await t('query_rewrite', get('rewrite'), { question: 'En hoeveel is dat per jaar?' },
+      { turns: () => [{ role: 'user', content: 'Hoeveel is de thuiswerkvergoeding?' }, { role: 'assistant', content: 'Die bedraagt 2 euro per dag.' }] });
+    console.table(rows);
+    return rows;
+  },
+};
+
+// ── MODULE: Retrieval ──────────────────────────────────────────────────────────
+const Retrieval = {
+  cosine(a,b) {
+    let dot=0,na=0,nb=0;
+    for (let i=0;i<a.length;i++) { dot+=a[i]*b[i]; na+=a[i]**2; nb+=b[i]**2; }
+    return dot/(Math.sqrt(na)*Math.sqrt(nb));
+  },
+  tokenize(q) { return q.toLowerCase().match(/[\wÀ-ÿ]{2,}/g)||[]; },
+  keywordScore(text,terms) {
+    const lower=text.toLowerCase();
+    const hits=terms.filter(t=>lower.includes(t)).length;
+    return terms.length ? hits/terms.length : 0;
+  },
+  headingMatchScore(text,terms) {
+    const h=text.split('\n').filter(l=>/^#{1,3}\s/.test(l.trimStart())).join(' ').toLowerCase();
+    if (!h) return 0;
+    const hits=terms.filter(t=>t.length>=2&&h.includes(t)).length;
+    return terms.length ? hits/terms.length : 0;
+  },
+  exactPhraseBonus(text,phrases,bonus) {
+    const lower=text.toLowerCase();
+    return phrases.filter(p=>p.includes(' ')&&lower.includes(p)).length*bonus;
+  },
+  /**
+   * Take items from a score-sorted list, capping how many may come from any
+   * single document. Preserves overall score order — within that order,
+   * skips items from a document once its cap is reached, so other
+   * documents' lower-but-still-relevant chunks get a fair chance.
+   *
+   * @param {Array}  sorted    — score-sorted items, each with .docName
+   * @param {number} limit     — total items to return
+   * @param {number} maxShare  — fraction 0-1, max share from one document
+   * (limit / maxShare / rrf_k / bonus come from the retrieve step of the flow)
+   */
+  capPerDocument(sorted, limit, maxShare) {
+    const maxPerDoc = Math.max(1, Math.floor(limit * maxShare));
+    const counts = new Map();
+    const result = [];
+    for (const item of sorted) {
+      const n = counts.get(item.docName) || 0;
+      if (n >= maxPerDoc) continue;
+      counts.set(item.docName, n + 1);
+      result.push(item);
+      if (result.length >= limit) break;
+    }
+    // If the cap left slots unfilled (e.g. corpus has very few documents),
+    // backfill from the remaining sorted items regardless of cap.
+    if (result.length < limit) {
+      const used = new Set(result);
+      for (const item of sorted) {
+        if (used.has(item)) continue;
+        result.push(item);
+        if (result.length >= limit) break;
+      }
+    }
+    return result;
+  },
+
+  /**
+   * Hybrid retrieval. `o` is the flow's retrieve step:
+   * {candidates, top_k, rrf_k, max_share_per_doc, exact_phrase_bonus, rerank}.
+   */
+  async search(query, expandedTerms=[], o, onPhase) {
+    const baseTerms = this.tokenize(query);
+    const allTerms  = expandedTerms.length
+      ? [...new Set([...baseTerms,...expandedTerms.flatMap(t=>[t.toLowerCase(),...this.tokenize(t)])])]
+      : baseTerms;
+    const phrases = expandedTerms.filter(t=>t.includes(' ')).map(t=>t.toLowerCase());
+
+    // optional document filter (flow input `docs`: exact doc names, already resolved)
+    const pool = o.docs?.length ? State.chunks.filter(c=>o.docs.includes(c.docName)) : State.chunks;
+    if (!pool.length) return [];
+
+    if (onPhase) onPhase('embed');
+    const qVec = await Backends.embed(query,'query');
+
+    if (onPhase) onPhase('hybrid');
+    const bySem = [...pool].map(c=>({id:c.id,s:this.cosine(qVec,c.vector)})).sort((a,b)=>b.s-a.s);
+    const byKw  = [...pool].map(c=>({id:c.id,s:this.keywordScore(c.text,allTerms)})).sort((a,b)=>b.s-a.s);
+    const byHd  = [...pool].map(c=>({id:c.id,s:this.headingMatchScore(c.text,allTerms)})).sort((a,b)=>b.s-a.s);
+
+    const semR=new Map(bySem.map((c,i)=>[c.id,i]));
+    const kwR =new Map(byKw.map((c,i) =>[c.id,i]));
+    const hdR =new Map(byHd.map((c,i) =>[c.id,i]));
+    const N=pool.length, K=o.rrf_k;
+
+    const cosById = new Map(bySem.map(c=>[c.id,c.s]));
+    let cands = pool.map(c=>({
+        ...c,
+        cos: cosById.get(c.id),
+        score: 1/(K+(semR.get(c.id)??N)) + 1/(K+(kwR.get(c.id)??N)) 
+           + this.exactPhraseBonus(c.text,phrases,o.exact_phrase_bonus),
+    }));
+    cands.sort((a,b)=>b.score-a.score);
+    cands = this.capPerDocument(cands, o.candidates, o.max_share_per_doc);
+
+    const hasReranker = o.rerank==='off' ? false : State.backend==='transformers'
+      ? (State.tjsRerankModel&&State.tjsRerankTokenizer)
+      : (State.backend==='llamacpp'&&!!State.rerankModel);
+    if (hasReranker) { if (onPhase) onPhase('rerank'); cands=await Backends.rerank(query,cands); }
+        const top = this.capPerDocument(cands, o.top_k, o.max_share_per_doc);
+        const floor = Number(o.min_cosine) || 0;
+        console.log('[Retrieve] best cosine', bySem[0].s.toFixed(3), '| floor', floor);
+        return floor ? top.filter(c => c.cos >= floor) : top;
+    },
+    checkAbsence(terms, alreadyFetched=[], o) {
+    if (!terms?.length) return [];
+    const ids=new Set(alreadyFetched.map(c=>c.id));
+    const lower=terms.filter(t=>t.length>=3).map(t=>t.toLowerCase());
+    const matches = State.chunks.filter(c=>!ids.has(c.id)&&lower.some(t=>c.text.toLowerCase().includes(t)));
+    return this.capPerDocument(matches, o.candidates, o.max_share_per_doc);
+  },
+};
+
+// ── MODULE: Thesaurus ─────────────────────────────────────────────────────────
+const Thesaurus = {
+  parse(text) {
+    const map=new Map();
+    for (const section of text.split(/^## /m).slice(1)) {
+      const lines=section.split('\n'), term=lines[0].trim();
+      if (!term) continue;
+      let definition='', synonyms=[], seeAlso=[];
+      for (const line of lines.slice(1)) {
+        const def=line.match(/\*\*Definitie:\*\*\s*(.+)/i);
+        const syn=line.match(/\*\*Synoniemen:\*\*\s*(.+)/i);
+        const see=line.match(/\*\*Zie ook:\*\*\s*(.+)/i);
+        if (def) definition=def[1].trim();
+        if (syn) synonyms=syn[1].split(',').map(s=>s.trim()).filter(Boolean);
+        if (see) seeAlso=see[1].split(',').map(s=>s.trim()).filter(Boolean);
+      }
+      const entry={term,definition,synonyms,seeAlso};
+      map.set(term.toLowerCase(),entry);
+      synonyms.forEach(s=>{ if (!map.has(s.toLowerCase())) map.set(s.toLowerCase(),entry); });
+    }
+    return map;
+  },
+  expandTerms(terms) {
+    if (!State.thesaurus) return terms;
+    const expanded=new Set(terms.map(t=>t.toLowerCase()));
+    for (const term of terms) {
+      const entry=State.thesaurus.get(term.toLowerCase());
+      if (entry) { entry.synonyms.forEach(s=>expanded.add(s.toLowerCase())); expanded.add(entry.term.toLowerCase()); }
+    }
+    return Array.from(expanded);
+  },
+  wikify(container) {
+    if (!State.thesaurus) return;
+    const entries=Array.from(State.thesaurus.entries())
+      .filter(([k,v])=>k===v.term.toLowerCase()&&v.definition)
+      .map(([,v])=>v).sort((a,b)=>b.term.length-a.term.length);
+    if (!entries.length) return;
+
+    // Single combined regex (longest terms first, so e.g. "Al dente" matches
+    // before a hypothetical shorter overlapping term would). This finds ALL
+    // term occurrences in one pass per text node — the previous per-term loop
+    // with `break` only ever wikified the first matching term in a sentence
+    // and ignored any others.
+    const termByLower = new Map(entries.map(e => [e.term.toLowerCase(), e]));
+    const pattern = entries.map(e => escapeRegex(e.term)).join('|');
+    const combined = new RegExp('\\b(?:'+pattern+')\\b','gi');
+
+    const SKIP=new Set(['ABBR','A','CODE','PRE','SCRIPT','STYLE']);
+    const walkNode=node => {
+      const children=Array.from(node.childNodes);
+      for (const child of children) {
+        if (child.nodeType===Node.TEXT_NODE) {
+          if (SKIP.has(child.parentElement?.tagName)) continue;
+          const original=child.textContent; if (!original.trim()) continue;
+          combined.lastIndex=0;
+          if (!combined.test(original)) continue;
+          const frag=document.createDocumentFragment();
+          let last=0; combined.lastIndex=0; let match;
+          while ((match=combined.exec(original))!==null) {
+            const entry = termByLower.get(match[0].toLowerCase());
+            if (!entry) continue; // shouldn't happen, but stay safe
+            if (match.index>last) frag.append(document.createTextNode(original.slice(last,match.index)));
+            const abbr=document.createElement('abbr');
+            abbr.className='wiki-term'; abbr.title=entry.definition; abbr.textContent=match[0];
+            frag.append(abbr); last=match.index+match[0].length;
+          }
+          if (last<original.length) frag.append(document.createTextNode(original.slice(last)));
+          child.parentNode.replaceChild(frag,child);
+        } else if (child.nodeType===Node.ELEMENT_NODE&&!SKIP.has(child.tagName)) { walkNode(child); }
+      }
+    };
+    walkNode(container);
+  },
+};
+
+// ── MODULE: UI ─────────────────────────────────────────────────────────────────
+const UI = {
+  updateState(update) {
+    const s=State.jsonState;
+    if (update?.intent&&update.intent!==s.intent) {
+      if (!s.intent_history) s.intent_history=[];
+      if (s.intent&&s.intent!=='Onbekend') s.intent_history.push(s.intent);
+      s.intent=update.intent;
+    }
+    ['facts_gathered','user_facts'].forEach(key => {
+      if (!Array.isArray(update?.[key])) return;
+      if (!Array.isArray(s[key])) s[key]=[];
+      update[key].forEach(f=>{ if(f&&!s[key].includes(f)) s[key].push(f); });
+    });
+    if (update?.decision!==undefined) {
+      if (!s.decision_history) s.decision_history=[];
+      if (s.current_decision) s.decision_history.push(s.current_decision);
+      s.current_decision=update.decision;
+    }
+    const skip=new Set(['intent','facts_gathered','user_facts','decision']);
+    Object.entries(update||{}).forEach(([k,v])=>{ if(!skip.has(k)) s[k]=v; });
+    document.getElementById('state-output').textContent=JSON.stringify(s,null,2);
+  },
+  clearHighlights() {
+    document.querySelectorAll('mark.ai-hl').forEach(m=>{
+      m.parentNode?.replaceChild(document.createTextNode(m.textContent),m); m.parentNode?.normalize();
+    });
+    document.querySelectorAll('.chunk-block').forEach(el=>{ el.style.background=''; });
+  },
+  highlightChunk(chunkId) {
+    const el=document.getElementById(chunkId); if (!el) return;
+    el.style.background='var(--hl)';
+    const pane=el.closest('.doc-content'); if (!pane) return;
+    const offset=pane.scrollTop+el.getBoundingClientRect().top-pane.getBoundingClientRect().top
+      -pane.clientHeight/2+el.clientHeight/2;
+    pane.scrollTo({top:Math.max(0,offset),behavior:'smooth'});
+  },
+  buildChips(citations) {
+    const row=document.createElement('div'); row.style.marginTop='8px';
+    citations.forEach(cit => {
+      if (!cit.document) return;
+      const suffix=cit.chunkId?' #'+cit.chunkId.split('_').at(-1):'';
+      const chip=document.createElement('span');
+      chip.className='citation-chip'; chip.title=cit.chunkId||cit.document;
+      chip.textContent='📍 '+cit.document+suffix;
+      chip.addEventListener('click',()=>{
+        const isActive=chip.classList.contains('chip-active');
+        row.querySelectorAll('.chip-active').forEach(c=>c.classList.remove('chip-active'));
+        this.clearHighlights();
+        if (!isActive) { chip.classList.add('chip-active'); if(cit.chunkId) this.highlightChunk(cit.chunkId); }
+      });
+      row.append(chip);
+    });
+    return row;
+  },
+  addMessage(role, text, citations=[]) {
+    const history=document.getElementById('chat-history');
+    const msg=document.createElement('div'); msg.className='msg '+role;
+    if (role==='bot'&&typeof marked!=='undefined') {
+      const body=document.createElement('div'); body.className='md-body';
+      body.innerHTML=marked.parse(text); msg.append(body);
+    } else { msg.textContent=text; }
+    if (citations.length) msg.append(this.buildChips(citations));
+    history.append(msg); history.scrollTop=history.scrollHeight; return msg;
+  },
+  createBubble(parentEl=null) {
+    const history=document.getElementById('chat-history');
+    const wrapper=parentEl??(() => { const w=document.createElement('div'); w.className='msg bot'; history.append(w); return w; })();
+    const body=document.createElement('div'); body.className='md-body streaming-cursor';
+    wrapper.append(body); history.scrollTop=history.scrollHeight;
+    let text='';
+    const render=()=>{ body.innerHTML=typeof marked!=='undefined'?marked.parse(text):text.replace(/\n/g,'<br>'); };
+    return {
+      el:wrapper,
+      append(chunk){text+=chunk;render();history.scrollTop=history.scrollHeight;},
+      finalize(citations=[]){
+        body.classList.remove('streaming-cursor'); render();
+        if(citations.length) wrapper.append(UI.buildChips(citations));
+        history.scrollTop=history.scrollHeight; return text;
+      },
+      getBody(){return body;},
+    };
+  },
+  showStatus(text) {
+    const el=document.createElement('div'); el.className='msg bot streaming'; el.textContent=text;
+    const history=document.getElementById('chat-history');
+    history.append(el); history.scrollTop=history.scrollHeight; return el;
+  },
+  renderDocument(filename, text) {
+    const chunks=Chunker.chunk(text,filename);
+    const content=document.createElement('div');
+    content.className='doc-content'; content.id='content-'+filename;
+    chunks.forEach(c => {
+      const block=document.createElement('div'); block.className='chunk-block'; block.id=c.id;
+      block.innerHTML=marked.parse(c.text); content.append(block);
+    });
+    const frame=document.createElement('article'); frame.className='doc-frame'; frame.id='frame-'+filename;
+    const title=document.createElement('header'); title.className='doc-title'; title.textContent=filename;
+    frame.append(title,content); document.getElementById('docs-container').append(frame);
+  },
+  renderMermaid() {
+    if (typeof mermaid==='undefined') return;
+    document.querySelectorAll('code.language-mermaid').forEach(el=>{
+      const div=document.createElement('div'); div.className='mermaid'; div.textContent=el.textContent;
+      (el.closest('pre')??el).replaceWith(div);
+    });
+    mermaid.run({querySelector:'.mermaid'});
+  },
+};
+
+// ── NLP helpers ───────────────────────────────────────────────────────────────
+
+function extractJSON(raw) {
+  let text=raw.trim().replace(/^`{3}(?:json)?\s*/i,'').replace(/\s*`{3}\s*$/,'');
+  const norm=obj=>{
+    if (!obj) return obj;
+    if (!obj.state_update) obj.state_update={};
+    ['intent','user_facts','facts_gathered'].forEach(k=>{
+      if (obj[k]!==undefined&&obj.state_update[k]===undefined) obj.state_update[k]=obj[k];
+    });
+    return obj;
+  };
+  try { return norm(JSON.parse(text)); } catch {}
+  const m=text.match(/\{[\s\S]*\}/); if (!m) return null;
+  try { return norm(JSON.parse(m[0])); } catch {}
+  try {
+    const b=m[0], str=pat=>b.match(pat)?.[1];
+    const arr=pat=>{ try { return JSON.parse(str(pat)??'null'); } catch { return null; } };
+    const obj={
+      decision:str(/"decision"\s*:\s*"([^"]*?)"/),
+      citations:arr(/"citations"\s*:\s*(\[[\s\S]*?\])\s*[,}]/),
+      state_update:{
+        intent:str(/"intent"\s*:\s*"([^"]*?)"/),
+        user_facts:arr(/"user_facts"\s*:\s*(\[[\s\S]*?\])/),
+        facts_gathered:arr(/"facts_gathered"\s*:\s*(\[[\s\S]*?\])/),
+      },
+    };
+    if (obj.decision||obj.state_update?.intent||obj.citations) return norm(obj);
+  } catch {}
+  return null;
+}
+
+function escapeRegex(str) { return str.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'); }
+function escapeHtml(str) {
+  return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function wordCount(str) { return str.trim().split(/\s+/).filter(Boolean).length; }
+
+// ── MODULE: Pipeline ──────────────────────────────────────────────────────────
+/**
+ * Chat host. The passes themselves are defined in flow-chat; this module only
+ * supplies inputs, renders status / streaming / pass-3 UI through flow hooks,
+ * and keeps the compact chat history.
+ */
+const Pipeline = {
+  /** Chunks that end up in the context, in order. `opts` = the flow's context step: {neighbours: auto|on|off, max}. auto = neighbours except on WebGPU. */
+  contextChunks(retrievedChunks, opts={}) {
+    const chunkMap=new Map(State.chunks.map(c=>[c.id,c]));
+    const contextIds=new Set(retrievedChunks.map(c=>c.id));
+    const mode=opts.neighbours||'auto';
+    if (mode==='on' || (mode==='auto' && State.backend!=='transformers')) {
+      retrievedChunks.forEach(c=>{
+        if (c.prevId&&chunkMap.has(c.prevId)) contextIds.add(c.prevId);
+        if (c.nextId&&chunkMap.has(c.nextId)) contextIds.add(c.nextId);
+      });
+    }
+    return Array.from(contextIds).map(id=>chunkMap.get(id)).filter(Boolean)
+      .sort((a,b)=>{
+        if (a.docName!==b.docName) return a.docName.localeCompare(b.docName);
+        return (parseInt(a.id.split('_').at(-1))||0)-(parseInt(b.id.split('_').at(-1))||0);
+      }).slice(0,opts.max||15);
+  },
+
+  buildContext(retrievedChunks, opts={}) {
+    const scores=new Map(retrievedChunks.map(c=>[c.id,c.score]));
+    return 'CONTEXT:\n'+this.contextChunks(retrievedChunks,opts).map(c=>{
+      const s=scores.get(c.id);
+      const score=typeof s==='number'?', Relevance: '+s.toFixed(2):'';
+      return '[Doc: '+c.docName+', ChunkId: '+c.id+score+']\n'+c.text;
+    }).join('\n\n');
+  },
+
+  /** Thesaurus vocabulary hint input (first 40 canonical terms), '' without thesaurus. */
+  thesTerms() {
+    return State.thesaurus
+      ? Array.from(State.thesaurus.entries()).filter(([k,v])=>k===v.term.toLowerCase()).map(([,v])=>v.term).slice(0,40).join(', ')
+      : '';
+  },
+  /** First document name — example in the pass-1 JSON schema. */
+  exampleDoc() { return State.chunks[0]?.docName || 'document.md'; },
+
+  async run(text) {
+    const history=document.getElementById('chat-history');
+    const scroll=()=>{ history.scrollTop=history.scrollHeight; };
+    const status=UI.showStatus('🔍 Vraag analyseren (pass 0)...');
+    let rerankTimer=null, p2status=null, p3status=null, bubble=null;
+
+    const prevUser=State.chatHistory.filter(m=>m.role==='user').slice(-1)[0]?.content??'';
+    const hasPrior=State.chatHistory.length>0;
+
+    const hooks={
+      status:label=>{ if (status.isConnected) { status.textContent=label; scroll(); } },
+      history:()=>State.chatHistory,
+      turns:()=>State.chatTurns,
+      reuse:()=>{
+        if (hasPrior && State.lastChunks && !State.forceNewSearch) {
+          status.textContent='♻️ Vorige zoekresultaten hergebruikt'; return State.lastChunks;
+        }
+        return null;
+      },
+      phase:phase=>{
+        if (phase==='embed')  status.textContent='🔍 Vraag inbedden...';
+        if (phase==='hybrid') status.textContent='🔍 RRF retrieval...';
+        if (phase==='rerank') {
+          const t0=Date.now(); status.textContent='⚖️ Reranking...';
+          rerankTimer=setInterval(()=>{
+            status.textContent='⚖️ Reranking... '+((Date.now()-t0)/1000).toFixed(1)+'s'; scroll();
+          },400);
+        }
+        scroll();
+      },
+      chunk:(id,t)=>{ if (id==='p2'&&bubble) bubble.append(t); },
+
+      before:(id,V,step)=>{
+        if (id==='p2') {
+          // Pass 1 accepted → state, highlights, diagnostics
+          const p1=V.p1;
+          if (p1.state_update) UI.updateState(p1.state_update);
+          if (p1.citations?.length) {
+            UI.clearHighlights(); p1.citations.forEach(c=>{if(c.chunkId) UI.highlightChunk(c.chunkId);});
+          }
+          // Narrow question + small model often cites fewer chunks than were in
+          // context — that is Pass 1's choice, not a retrieval limit.
+          console.log('[Pass 1] chunks in context:', V.chunks.length,
+            '— chunks cited:', p1.citations?.length || 0,
+            V.chunks.map(c=>c.id), '→ cited:', (p1.citations||[]).map(c=>c.chunkId));
+
+          status.remove();
+          p2status=State.backend==='lmstudio'?UI.showStatus(step.label):null;
+          const thinking=document.createElement('details');
+          thinking.className='msg bot thinking-block';
+          thinking.style.cssText='font-size:.82rem;color:#555;background:#f8f8f8;border-color:#ddd';
+          const thinkingSummary=document.createElement('summary');
+          thinkingSummary.style.cssText='cursor:pointer;font-size:.8rem;color:#888;user-select:none;padding:.3rem 0';
+          thinkingSummary.textContent='🧠 Redenering (klik om te tonen/verbergen)';
+          thinking.append(thinkingSummary); history.append(thinking);
+          bubble=UI.createBubble(thinking);
+        }
+        if (id==='p3') {
+          V.acc_facts=(State.jsonState.facts_gathered||[]).join('; ')||'none yet';
+          V.intent_ctx=State.jsonState.intent_history?.length
+            ? 'Prior: '+State.jsonState.intent_history.join(' → ')+' → '+State.jsonState.intent
+            : 'Current: '+(State.jsonState.intent||'unknown');
+          p3status=UI.showStatus(step.label);
+        }
+      },
+
+      after:(id,V)=>{
+        if (id==='retrieve') {
+          if (!V.reused) State.lastChunks=V.chunks;
+          State.forceNewSearch=false;
+          if (rerankTimer) { clearInterval(rerankTimer); rerankTimer=null; }
+        }
+        if (id==='scan' && V.scan_applied) State.lastChunks=V.chunks;
+        if (id==='p2') {
+          if (p2status) p2status.remove();
+          bubble.finalize(V.p1.citations||[]);
+          if (State.thesaurus) Thesaurus.wikify(bubble.getBody());
+        }
+        if (id==='p3') {
+          p3status.remove();
+          const p3text=V.p3||'';
+          if (p3text.trim()) {
+            const p3el=document.createElement('div'); p3el.className='msg bot pass3-block';
+            const p3body=document.createElement('div'); p3body.className='md-body';
+            p3body.innerHTML=typeof marked!=='undefined'?marked.parse(
+              p3text.replace(/\[SHORT ANSWER\]/gi,'').replace(/\[FOLLOW-UP\]/gi,'\n\n---\n\n**Mogelijke vervolgvragen:**\n\n').trim()
+            ):p3text;
+            if (State.thesaurus) Thesaurus.wikify(p3body);
+            p3el.append(p3body);
+            p3el.querySelectorAll('blockquote').forEach(el=>{
+              const q=el.textContent.trim().replace(/^>\s*/,'');
+              if (q.length>5) {
+                el.style.cursor='pointer'; el.title='Klik om te stellen';
+                el.addEventListener('click',()=>{
+                  document.getElementById('chat-input').value=q;
+                  document.getElementById('input-form').requestSubmit();
+                });
+              }
+            });
+            history.append(p3el); scroll();
+          }
+        }
+      },
+    };
+
+    try {
+      const res=await Flow.run('chat',{
+        question:text, prev_question:prevUser!==text?prevUser:'',
+        thes_terms:this.thesTerms(), example_doc:this.exampleDoc(),
+      },hooks);
+
+      // Flow stopped itself (no chunks / no valid JSON / no citations): show its reply.
+      if (res.stopped) { status.remove(); UI.addMessage('bot',res.reply); return; }
+
+      // ── Update compact history (flow slices to history_turns when it reads it) ──
+      const parsed=res.vars.p1;
+      const compact=JSON.stringify({
+        decision:parsed.decision||'',
+        state_update:{intent:parsed.state_update?.intent||'',user_facts:parsed.state_update?.user_facts||[],
+          facts_gathered:(parsed.state_update?.facts_gathered||[]).slice(0,3)},
+        citations:(parsed.citations||[]).slice(0,2),
+      });
+      State.chatHistory.push({role:'user',content:text});
+      State.chatHistory.push({role:'assistant',content:compact});
+      // plain turns (real question + answer) for the query_rewrite adapter
+      State.chatTurns.push({role:'user',content:text},{role:'assistant',content:String(res.vars.answer||'').slice(0,700)});
+      State.chatTurns=State.chatTurns.slice(-12);
+    } catch(e) {
+      try { status.remove(); } catch {}
+      throw e;
+    } finally {
+      if (rerankTimer) clearInterval(rerankTimer);
+    }
+  },
+};
+
+// ── MODULE: Doc ───────────────────────────────────────────────────────────────
+/**
+ * Template document builder.
+ *
+ * Source-of-truth separation:
+ *   - `doc-source` textarea  = exactly what the user typed. NEVER mutated by
+ *     block execution. Safe to edit while blocks run.
+ *   - `State.docResults`     = Map<blockKey, outputText>, one entry per
+ *     prompt/evaluation block that has been run. blockKey is a content hash
+ *     of the block's fence text, so results survive edits elsewhere in the
+ *     document and re-running a block overwrites its own entry only.
+ *   - `State.docProvenance`  = array of log entries, rendered as a table at
+ *     the bottom of the preview. Not part of source; included on download.
+ *
+ * render() merges source + docResults + docProvenance into the preview HTML.
+ * Re-running a block updates docResults[key] and re-renders — no index
+ * arithmetic, no source mutation, no corruption if the user types meanwhile.
+ */
+const Doc = {
+  STORAGE_KEY:      'fietsbel-template',
+  RESULTS_KEY:      'fietsbel-template-results',
+  PROVENANCE_KEY:   'fietsbel-template-provenance',
+  NOTES_KEY:        'fietsbel-template-notes',
+
+  /**
+   * Render markdown to HTML, then apply thesaurus wikification.
+   * wikify() operates on a live DOM tree, not a string — so we render into
+   * a detached container, wikify it, and return the resulting innerHTML.
+   * Used for prompt/evaluation block outputs in the template editor, so
+   * generated document prose gets the same <abbr title="..."> tooltips as
+   * chat answers.
+   */
+  wikifyHtml(html) {
+    if (!State.thesaurus) return html;
+    const div = document.createElement('div');
+    div.innerHTML = html;
+    Thesaurus.wikify(div);
+    return div.innerHTML;
+  },
+
+  /** Short, stable hash of a string (FNV-1a, 32-bit hex). Used as block key. */
+  hashBlock(str) {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < str.length; i++) {
+      h ^= str.charCodeAt(i);
+      h = Math.imul(h, 0x01000193);
+    }
+    return (h >>> 0).toString(16);
+  },
+
+  /** Parse source into typed blocks: text | prompt | evaluation | (other fence) */
+  /**
+   * Parse source into typed blocks: text | prompt | evaluation | (other fence).
+   * Allows up to 3 leading spaces before a fence (CommonMark-compatible —
+   * 4+ spaces would make it an indented code block instead). The opening
+   * fence's indentation is captured and stripped from content lines and the
+   * closing fence, so `retrieval:`/`rewrite:`/`|` line-prefix matching in
+   * parsePromptBlock/parseEvalRows works regardless of how the user indented
+   * the block in the editor.
+   */
+  parseBlocks(source) {
+    const blocks=[], re=/^( {0,3})```(\w+)\n([\s\S]*?)^\1```[ \t]*$/gm;
+    let last=0, match;
+    while ((match=re.exec(source))!==null) {
+      if (match.index>last)
+        blocks.push({type:'text',content:source.slice(last,match.index),start:last,end:match.index});
+      const type=match[1+1].toLowerCase(); // group 2: type (group 1 is indentation)
+      const indent=match[1];
+      const content = indent
+        ? match[3].split('\n').map(l=>l.startsWith(indent)?l.slice(indent.length):l).join('\n')
+        : match[3];
+      blocks.push({type,content,raw:match[0],start:match.index,end:match.index+match[0].length,
+        key:(type==='prompt'||type==='evaluation')?this.hashBlock(match[0]):null,
+        as:type==='prompt'?this.parsePromptBlock(content).as:''});
+      last=match.index+match[0].length;
+    }
+    if (last<source.length)
+      blocks.push({type:'text',content:source.slice(last),start:last,end:source.length});
+    return blocks;
+  },
+
+  /**
+   * Parse prompt block content → {retrieval, rewrite, as} (multi-line safe).
+   *   as: name      optional — result becomes $name for later blocks
+   *   docs: a.md, b.md   optional — retrieve only from these uploaded documents
+   *   retrieval:    what to look up / research (may use $1, $prev, $name …)
+   *   rewrite:      how to write it up (may use $1, $prev, $name …);
+   *                 `rewrite: none` skips the rewrite pass and returns the research findings
+   */
+  parsePromptBlock(content) {
+    const lines=content.trim().split('\n');
+    let retrieval=[], rewrite=[], as='', docs=[], current=null;
+    for (const line of lines) {
+      if (line.startsWith('retrieval:')) { current='r'; retrieval.push(line.slice('retrieval:'.length).trim()); }
+      else if (line.startsWith('rewrite:')) { current='w'; rewrite.push(line.slice('rewrite:'.length).trim()); }
+      else if (line.startsWith('docs:')) {
+        current=null; docs=line.slice(5).split(',').map(d=>d.trim()).filter(Boolean);
+      }
+      else if (line.startsWith('as:')) {
+        current=null; const n=line.slice(3).trim().replace(/^\$/,'');
+        as=/^[A-Za-z_]\w*$/.test(n)?n:'';
+      }
+      else if (current==='r'&&line.trim()) retrieval.push(line.trim());
+      else if (current==='w'&&line.trim()) rewrite.push(line.trim());
+    }
+    return {retrieval:retrieval.join(' '),rewrite:rewrite.join(' '),as,docs};
+  },
+
+  /**
+   * Substitute $1, $2 … (n-th prompt block), $prev (nearest prompt block above)
+   * and $name (blocks with `as: name`) by those blocks' stored results. ${1} also
+   * works when the name is followed by letters. Unknown names (e.g. "$5 fee")
+   * stay as typed; a known block without a result yet is an error.
+   */
+  substitute(text, blocks, idx) {
+    if (!text || !text.includes('$')) return text;
+    const prompts=blocks.map((b,i)=>({b,i})).filter(x=>x.b.type==='prompt');
+    const byName=new Map();
+    prompts.forEach((x,n)=>{ byName.set(String(n+1),x.b); if (x.b.as) byName.set(x.b.as,x.b); });
+    const above=[...prompts].reverse().find(x=>x.i<idx);
+    return text.replace(/\$(?:\{(\w+)\}|(\w+))/g,(m,a,b)=>{
+      const name=a||b;
+      if (name==='prev' && !byName.has('prev')) {
+        if (!above) throw new Error('$prev: er staat geen prompt-blok boven dit blok.');
+        return this.blockResult(above.b,name);
+      }
+      const blk=byName.get(name);
+      return blk ? this.blockResult(blk,name) : m;
+    });
+  },
+  blockResult(blk,name) {
+    const res=State.docResults[blk.key];
+    if (res===undefined) throw new Error('$'+name+' heeft nog geen resultaat — voer dat prompt-blok eerst uit.');
+    return res.trim();
+  },
+
+  /** Parse evaluation block content → array of rubric rows */
+  parseEvalRows(content) {
+    return content.trim().split('\n')
+      .filter(l=>l.trim().startsWith('|'))
+      .filter(l=>!/^\|[\s:|-]+\|?\s*$/.test(l.trim()))
+      .map(l=>{
+        const cols=l.split('|').map(c=>c.trim()).filter(Boolean);
+        if (cols.length<3) return null;
+        if (/^1\s*★/.test(cols[2])) return null;
+        return {
+          title:cols[0]||'', description:cols[1]||'',
+          onestar:cols[2]||'', twostar:cols[3]||'', threestar:cols[4]||'',
+          doRag:cols.some(c=>c.toLowerCase()==='do-rag'),
+        };
+      }).filter(Boolean);
+  },
+
+  /**
+   * Find evaluable text above an eval block (by block index in `blocks`).
+   * Scans backward over sibling blocks, stopping at a heading line or a
+   * non-output/non-text fence (prompt/evaluation). Any existing result for
+   * a prompt block immediately above IS included (it renders as plain
+   * prose in the preview, equivalent to an unwrapped output fence).
+   */
+  getEvalScope(blocks, blockIdx) {
+    let scope = '';
+    for (let i = blockIdx - 1; i >= 0; i--) {
+      const b = blocks[i];
+      if (b.type === 'text') {
+        // Stop at the last heading line within this text block; keep text after it
+        const lines = b.content.split('\n');
+        let headingAt = -1;
+        for (let li = lines.length - 1; li >= 0; li--) {
+          if (/^#{1,6}\s/.test(lines[li])) { headingAt = li; break; }
+        }
+        if (headingAt >= 0) {
+          scope = lines.slice(headingAt + 1).join('\n') + scope;
+          break; // heading found — stop scanning further back
+        }
+        scope = b.content + scope;
+      } else if (b.type === 'prompt') {
+        const result = State.docResults[b.key];
+        if (result) scope = result + '\n\n' + scope;
+        break; // prompt block (with or without result) is a hard boundary
+      } else if (b.type === 'evaluation') {
+        break; // another evaluation block is a hard boundary
+      }
+      // other fence types: skip silently, keep scanning backward
+    }
+    return scope.trim();
+  },
+
+  /**
+   * Match requested document names (case-insensitive, ".md" optional) against the
+   * uploaded set. Returns {names, missing}.
+   */
+  resolveDocs(requested) {
+    const have=[...new Set(State.chunks.map(c=>c.docName))];
+    const norm=n=>n.toLowerCase().replace(/\.md$/,'');
+    const names=[], missing=[];
+    for (const r of requested) {
+      const hit=have.find(h=>norm(h)===norm(r));
+      if (hit) { if (!names.includes(hit)) names.push(hit); } else missing.push(r);
+    }
+    return {names,missing};
+  },
+
+  /** Run a prompt block through flow-doc_prompt (research + optional rewrite). */
+  async runPromptBlock(blocks, blockIdx, onChunk) {
+    const block=blocks[blockIdx];
+    const {retrieval,rewrite,docs:wanted}=this.parsePromptBlock(block.content);
+    if (!retrieval) throw new Error('Geen retrieval: prompt opgegeven.');
+
+    // docs: filter. Missing documents never block the run — they become a warning.
+    const warnings=[], {names,missing}=this.resolveDocs(wanted);
+    if (missing.length) warnings.push('Document'+(missing.length>1?'en':'')+' niet gevonden in de geüploade set: '+
+      missing.map(m=>'`'+m+'`').join(', ')+'. '+
+      (names.length?'Gefilterd op: '+names.map(n=>'`'+n+'`').join(', ')+'.':'Er is niet gefilterd: het hele corpus is doorzocht.'));
+
+    const question=this.substitute(retrieval,blocks,blockIdx);
+    const skipRewrite=/^none$/i.test(rewrite.trim());
+    const rewriteGiven=skipRewrite?'':this.substitute(rewrite,blocks,blockIdx);
+
+    const res=await Flow.run('doc_prompt',{
+      question, docs:names, rewrite_given:rewriteGiven, do_rewrite:!skipRewrite,
+      thes_terms:Pipeline.thesTerms(), example_doc:Pipeline.exampleDoc(),
+    },{
+      status:label=>{ document.getElementById('doc-status').textContent='⏳ Blok '+(blockIdx+1)+': '+label; },
+      // stream the final text only: the rewrite, or the findings when the rewrite is skipped
+      chunk:(id,t,acc,V)=>{ if (onChunk&&(id==='rewrite'||(id==='research'&&!V.do_rewrite))) onChunk(acc); },
+    });
+    if (res.stopped) throw new Error(res.reply);
+
+    const V=res.vars, outputText=V.output;
+    const chunkIds=(V.p1?.citations||[]).map(c=>c.chunkId).filter(Boolean);
+    const ctxStep=Flow.steps(Flow.pick('doc_prompt')).find(x=>x.id==='ctx');
+    const used=Pipeline.contextChunks(V.chunks,ctxStep).map(c=>({
+      label:c.docName+' #'+c.id.split('_').at(-1), text:c.text, cited:chunkIds.includes(c.id),
+    }));
+    return {
+      outputText, notes:{warnings,chunks:used},
+      provenance:{type:'prompt',model:State.chatModel||'Browser AI',embedModel:State.embedModel,
+        chunkIds,inputWords:wordCount(question+' '+V.context),outputWords:wordCount(outputText)},
+    };
+  },
+
+  /** Run an evaluation block: one LLM call per rubric row */
+  async runEvalBlock(blocks, blockIdx, onChunk) {
+    const block = blocks[blockIdx];
+    const rows=this.parseEvalRows(block.content);
+    if (!rows.length) throw new Error('Geen geldige rubrieken gevonden.');
+    const scopeText=this.getEvalScope(blocks, blockIdx);
+    if (!scopeText) throw new Error('Geen tekst boven dit evaluatieblok gevonden.');
+
+    let outputLines=[], totalStars=0, maxStars=rows.length*3;
+
+    for (const row of rows) {
+      if (State.docStopRequested) break;
+      const res=await Flow.run('doc_eval',{
+        rag:row.doRag&&State.chunks.length>0,
+        row_title:row.title, row_description:row.description,
+        row_onestar:row.onestar, row_twostar:row.twostar, row_threestar:row.threestar,
+        scope_text:scopeText, thes_terms:Pipeline.thesTerms(), example_doc:Pipeline.exampleDoc(),
+      });
+      const result=res.vars.verdict;
+
+      const numMatch=result.match(/★(\d)/); const starStr=(result.match(/★+/g)||[])[0]||'★';
+      let stars=numMatch ? parseInt(numMatch[1]) : starStr.length;
+      stars=Math.max(1,Math.min(3,stars));
+      totalStars+=stars;
+
+      const starDisplay='★'.repeat(stars)+'☆'.repeat(3-stars);
+      const formatted=result.trim().replace(/★[\d★☆]*/,'★'+stars).replace(/★\d/,starDisplay)
+        .replace(/^(\*\*[^*]+)\s*★+/,'$1 '+starDisplay);
+      outputLines.push(formatted);
+
+      const runningTotal='**Totaal tot nu: '+totalStars+'/'+(outputLines.length*3)+' ★**';
+      if (onChunk) onChunk(outputLines.join('\n')+'\n\n'+runningTotal);
+    }
+
+    if (!outputLines.length) throw new Error('Geen rubrieken uitgevoerd (gestopt?).');
+    if (State.docStopRequested) maxStars=outputLines.length*3;
+    const totalLine='\n\n**Totaal: '+totalStars+'/'+maxStars+' ★ ('+(Math.round(totalStars/maxStars*100))+'%)**';    const outputText=outputLines.join('\n')+totalLine;
+
+    return {
+      outputText,
+      provenance:{type:'eval',model:State.chatModel||'Browser AI',embedModel:'',
+        chunkIds:[],inputWords:wordCount(scopeText),outputWords:wordCount(outputText),
+        stars:totalStars+'/'+maxStars},
+    };
+  },
+
+  /** Execute a single block by its current index; writes result into docResults, re-renders */
+  async runBlockByIndex(blockIdx) {
+    if (!State.docRunning) State.docStopRequested=false;
+    const source=document.getElementById('doc-source').value;
+    const blocks=this.parseBlocks(source);
+    if (blockIdx>=blocks.length) return;
+    const block=blocks[blockIdx];
+    if (block.type!=='prompt'&&block.type!=='evaluation') return;
+
+    const blockEl=document.querySelector('[data-block="'+blockIdx+'"]');
+    const prev=blockEl?.nextElementSibling;
+    if (prev?.classList.contains('doc-output-streaming')) prev.remove();
+
+    const streamEl=document.createElement('div');
+    streamEl.className='doc-output-streaming';
+    streamEl.innerHTML='<em>⏳ Bezig met uitvoeren...</em>';
+    if (blockEl) blockEl.after(streamEl);
+
+    const runBtn=blockEl?.querySelector('[data-run]');
+    if (runBtn) runBtn.disabled=true;
+    document.getElementById('doc-status').textContent='⏳ Blok '+(blockIdx+1)+' uitvoeren...';
+
+    const renderInto=text=>{
+      streamEl.innerHTML='<div class="md-body">'+(typeof marked!=='undefined'?marked.parse(text):text)+'</div>';
+    };
+
+    try {
+      let result;
+      if (block.type==='prompt') {
+        result=await this.runPromptBlock(blocks,blockIdx,renderInto);
+      } else {
+        result=await this.runEvalBlock(blocks,blockIdx,renderInto);
+      }
+
+      State.docResults[block.key]=result.outputText;
+      if (result.notes) State.docNotes[block.key]=result.notes; else delete State.docNotes[block.key];
+      State.docProvenance.push(result.provenance);
+      this.saveResults();
+
+      const preview=document.getElementById('doc-preview');
+      const scrollTop=preview.scrollTop;
+      this.render(document.getElementById('doc-source').value); // re-read in case user edited meanwhile
+      preview.scrollTop=scrollTop;
+
+      document.getElementById('doc-status').textContent='✓ Blok '+(blockIdx+1)+' klaar';
+
+    } catch(e) {
+      streamEl.className='';
+      streamEl.style.cssText='color:red;padding:.5rem;border:1px solid #fcc;background:#fff5f5;margin:.5rem 0;border-radius:4px';
+      streamEl.textContent='❌ Fout: '+e.message;
+      document.getElementById('doc-status').textContent='❌ Fout in blok '+(blockIdx+1);
+      console.error('[Doc] Block error:',e);
+    }
+  },
+
+  /**
+   * Run all prompt/evaluation blocks top-to-bottom.
+   * Blocks are stable across iterations now (source is never mutated by
+   * execution), so we re-parse once and iterate by index directly.
+   */
+  async runAll() {
+    State.docRunning=true; State.docStopRequested=false;
+    document.getElementById('doc-play-all').disabled=true;
+    document.getElementById('doc-stop').disabled=false;
+
+    const source=document.getElementById('doc-source').value;
+    const blocks=this.parseBlocks(source);
+    for (let i=0;i<blocks.length;i++) {
+      if (State.docStopRequested) break;
+      if (blocks[i].type==='prompt'||blocks[i].type==='evaluation')
+        await this.runBlockByIndex(i);
+    }
+
+    State.docRunning=false;
+    document.getElementById('doc-play-all').disabled=false;
+    document.getElementById('doc-stop').disabled=true;
+    document.getElementById('doc-status').textContent=State.docStopRequested?'⏹ Gestopt':'✓ Alles uitgevoerd';
+  },
+
+  /** Render source + docResults + provenance log to the preview pane */
+  render(source) {
+    const blocks=this.parseBlocks(source);
+    let html='', promptNo=0;
+    blocks.forEach((block,i) => {
+      if (block.type==='text') {
+        html+=typeof marked!=='undefined'?marked.parse(block.content):block.content;
+      } else if (block.type==='prompt') {
+        const {retrieval,rewrite,as,docs}=this.parsePromptBlock(block.content);
+        promptNo++;
+        html+=`<div class="doc-block" data-block="${i}">
+          <div class="doc-block-header">
+            <span class="doc-block-type">✍️ Prompt <code>$${promptNo}${as?' · $'+escapeHtml(as):''}</code></span>
+            <button class="doc-run-btn" data-run="${i}">▶ Uitvoeren</button>
+          </div>
+          <div class="doc-block-body">
+            <div class="doc-block-field"><strong>Ophalen:</strong> ${escapeHtml(retrieval||'(leeg)')}</div>
+            ${docs.length?`<div class="doc-block-field"><strong>Documenten:</strong> ${escapeHtml(docs.join(', '))}</div>`:''}
+            ${rewrite?`<div class="doc-block-field"><strong>Herschrijven:</strong> ${escapeHtml(rewrite)}</div>`:''}
+          </div>
+        </div>`;
+        const result=State.docResults[block.key];
+        if (result) html+=`<div class="doc-output">${this.wikifyHtml(typeof marked!=='undefined'?marked.parse(result):result)}</div>`+this.renderNotes(State.docNotes[block.key]);
+      } else if (block.type==='evaluation') {
+        const rows=this.parseEvalRows(block.content);
+        html+=`<div class="doc-block" data-block="${i}">
+          <div class="doc-block-header">
+            <span class="doc-block-type">📊 Evaluatie — ${rows.length} criteria</span>
+            <button class="doc-run-btn" data-run="${i}">▶ Evalueren</button>
+          </div>
+          <div class="doc-block-body">
+            ${rows.map(r=>`<div class="doc-eval-row"><strong>${escapeHtml(r.title)}</strong>${r.doRag?' <em>🔍 RAG</em>':''} — ${escapeHtml(r.description)}</div>`).join('')}
+          </div>
+        </div>`;
+        const result=State.docResults[block.key];
+        if (result) html+=`<div class="doc-output">${this.wikifyHtml(typeof marked!=='undefined'?marked.parse(result):result)}</div>`;
+      } else {
+        // Unknown fence type (incl. legacy ```output) — render as-is via marked
+        html+=typeof marked!=='undefined'?marked.parse(block.raw):escapeHtml(block.raw);
+      }
+    });
+
+    if (State.docProvenance.length) html += this.renderProvenance();
+
+    const preview=document.getElementById('doc-preview');
+    preview.innerHTML=html;
+    UI.renderMermaid();
+  },
+
+  /** Warnings + numbered used-chunk list (hover = chunk text, same <abbr title> mechanism as the thesaurus). */
+  renderNotes(n) {
+    if (!n) return '';
+    let h='';
+    (n.warnings||[]).forEach(w=>{
+      h+=`<div style="margin:.4rem 0;padding:.35rem .6rem;border-left:3px solid #e0a800;background:#fff8e1;font-size:.82rem">⚠️ ${escapeHtml(w).replace(/`([^`]+)`/g,'<code>$1</code>')}</div>`;
+    });
+    if (n.chunks?.length) {
+      h+=`<div style="margin:.4rem 0;font-size:.8rem;color:#555"><strong>Gebruikte chunks</strong> (✓ = geciteerd door pass 1; beweeg de muis over een chunk om de tekst te zien)<ol style="margin:.2rem 0 0 1.2rem;padding:0">`+
+        n.chunks.map(c=>`<li><abbr class="wiki-term" title="${escapeHtml(c.text)}">${escapeHtml(c.label)}</abbr>${c.cited?' ✓':''}</li>`).join('')+`</ol></div>`;
+    }
+    return h;
+  },
+
+  /** Build the provenance log table as HTML (derived, not stored in source) */
+  renderProvenance() {
+    const rows = State.docProvenance.map((e,i) => {
+      const ts = e.ts || '—';
+      return `| ${i+1} | ${e.type} | ${e.model} | ${(e.chunkIds||[]).join(', ')||'—'} | `+
+             `${e.inputWords} | ${e.outputWords} | ${e.stars||'—'} | ${ts} |`;
+    }).join('\n');
+    const md = '\n\n---\n## 🤖 AI Provenance Log\n\n'+
+      '| # | Type | Model | Chunks | Input w | Output w | Score | Tijd |\n'+
+      '|---|------|-------|--------|---------|----------|-------|------|\n'+rows;
+    return typeof marked!=='undefined'?marked.parse(md):md;
+  },
+
+  /**
+   * Serialize source + results + provenance for download.
+   * Inserts an ```output fence after each prompt/evaluation block that has
+   * a result, and appends the provenance table as markdown — so the
+   * downloaded file is self-contained and re-uploadable.
+   */
+  serialize(source) {
+    const blocks=this.parseBlocks(source);
+    let out='';
+    blocks.forEach(block=>{
+      out+= block.type==='text' ? block.content : block.raw;
+      if ((block.type==='prompt'||block.type==='evaluation')) {
+        const result=State.docResults[block.key];
+        if (result) {
+          out+='\n\n```output\n'+result.trim()+'\n```\n';
+          const n=State.docNotes[block.key];
+          (n?.warnings||[]).forEach(w=>{ out+='\n> ⚠️ '+w+'\n'; });
+          if (n?.chunks?.length) out+='\nGebruikte chunks: '+n.chunks.map((c,i)=>(i+1)+'. '+c.label+(c.cited?' ✓':'')).join(' · ')+'\n';
+        }
+      }
+    });
+    if (State.docProvenance.length) {
+      const rows = State.docProvenance.map((e,i) =>
+        `| ${i+1} | ${e.type} | ${e.model} | ${(e.chunkIds||[]).join(', ')||'—'} | `+
+        `${e.inputWords} | ${e.outputWords} | ${e.stars||'—'} | ${e.ts||'—'} |`
+      ).join('\n');
+      out += '\n\n---\n## 🤖 AI Provenance Log\n\n'+
+        '| # | Type | Model | Chunks | Input w | Output w | Score | Tijd |\n'+
+        '|---|------|-------|--------|---------|----------|-------|------|\n'+rows+'\n';
+    }
+    return out;
+  },
+
+  save(source)  { try { localStorage.setItem(this.STORAGE_KEY,source); } catch {} },
+  load()        { return localStorage.getItem(this.STORAGE_KEY)||''; },
+  saveResults() {
+    try {
+      localStorage.setItem(this.RESULTS_KEY, JSON.stringify(State.docResults));
+      localStorage.setItem(this.PROVENANCE_KEY, JSON.stringify(State.docProvenance));
+      localStorage.setItem(this.NOTES_KEY, JSON.stringify(State.docNotes));
+    } catch {}
+  },
+  loadResults() {
+    try {
+      State.docResults = JSON.parse(localStorage.getItem(this.RESULTS_KEY) || '{}');
+      State.docProvenance = JSON.parse(localStorage.getItem(this.PROVENANCE_KEY) || '[]');
+      State.docNotes = JSON.parse(localStorage.getItem(this.NOTES_KEY) || '{}');
+    } catch { State.docResults = {}; State.docProvenance = []; State.docNotes = {}; }
+  },
+  /** Clear results + provenance — called when a new template.md is uploaded */
+  resetResults() {
+    State.docResults = {}; State.docProvenance = []; State.docNotes = {};
+    try { localStorage.removeItem(this.RESULTS_KEY); localStorage.removeItem(this.PROVENANCE_KEY); localStorage.removeItem(this.NOTES_KEY); } catch {}
+  },
+};
+
+// ── MODULE: Setup ──────────────────────────────────────────────────────────────
+const Setup = {
+  showPanel(id) {
+    document.querySelectorAll('#setup-dialog .panel').forEach(p=>{p.hidden=true;});
+    document.getElementById(id).hidden=false;
+  },
+  progress(text,pct) {
+    document.getElementById('load-text').textContent=text;
+    document.getElementById('load-bar').value=Math.round(pct);
+  },
+  async loadApiModels(url) {
+    const res=await fetch(url+'/v1/models'); if (!res.ok) throw new Error('HTTP '+res.status);
+    return (await res.json()).data.map(m=>m.id);
+  },
+  populateSelect(id, models, preferTerms=[]) {
+    const sel=document.getElementById(id); sel.innerHTML='';
+    models.forEach(m=>sel.add(new Option(m,m)));
+    const idx=models.findIndex(m=>preferTerms.some(t=>m.toLowerCase().includes(t)));
+    if (idx>=0) sel.selectedIndex=idx;
+  },
+  async loadTransformers() {
+    let mod; try { mod=await import('./transformers.min.js'); }
+    catch { throw new Error('transformers.min.js niet gevonden naast index.html.'); }
+    const {pipeline,env,TextStreamer,AutoTokenizer,AutoModel,
+           AutoModelForSequenceClassification,mean_pooling,layer_norm}=mod;
+    State.TextStreamer=TextStreamer; State.tjsMath={mean_pooling,layer_norm};
+    env.allowLocalModels=false; env.allowRemoteModels=true; env.useBrowserCache=true;
+    const device=typeof navigator.gpu!=='undefined'?'webgpu':'wasm';
+    const prog=(msg,pct)=>{
+      document.getElementById('tjs-prog-text').textContent=msg;
+      document.getElementById('tjs-prog-bar').value=Math.round(pct);
+    };
+    prog('Embedding tokenizer laden...',5);
+    State.tjsTokenizer=await AutoTokenizer.from_pretrained('nomic-ai/nomic-embed-text-v1.5');
+    State.tjsEmbedModel=await AutoModel.from_pretrained('nomic-ai/nomic-embed-text-v1.5',{device,dtype:'q4',
+      progress_callback:x=>{if(x.status==='progress') prog('Embedding: '+(x.file||'')+' '+Math.round(x.progress||0)+'%',5+(x.progress||0)*.15);}});
+    prog('Reranker laden...',25);
+    State.tjsRerankTokenizer=await AutoTokenizer.from_pretrained('Xenova/bge-reranker-base',{
+      progress_callback:x=>{if(x.status==='progress') prog('Reranker tokenizer: '+(x.file||''),26);}});
+    State.tjsRerankModel=await AutoModelForSequenceClassification.from_pretrained('Xenova/bge-reranker-base',{device,dtype:'q8',
+      progress_callback:x=>{if(x.status==='progress') prog('Reranker: '+Math.round(x.progress||0)+'%',27+(x.progress||0)*.18);}});
+    prog('LLM laden...',50);
+    State.tjsLLMPipeline=await pipeline('text-generation','onnx-community/granite-4.0-micro-ONNX-web',{device,
+      progress_callback:x=>{if(x.status==='progress') prog('LLM: '+Math.round(x.progress||0)+'%',50+(x.progress||0)*.5);}});
+    prog('✓ Modellen geladen!',100);
+  },
+  async ingestFiles(files) {
+    const isThes=f=>/thesaurus/i.test(f.name);
+    const thesFile=Array.from(files).find(isThes);
+    const docFiles=Array.from(files).filter(f=>!isThes(f));
+    if (thesFile) {
+      this.progress('📚 Thesaurus laden: '+thesFile.name+'...',0);
+      State.thesaurus=Thesaurus.parse(await thesFile.text());
+      const n=Array.from(State.thesaurus.entries()).filter(([k,v])=>k===v.term.toLowerCase()).length;
+      console.log('[Thesaurus] '+n+' terms');
+    }
+    if (!docFiles.length) { this.progress('✓ Alleen thesaurus geladen',100); return; }
+
+    // Phase 1: chunk + render
+    const allChunks=[];
+    const chunkCounts={};
+    for (const file of docFiles) {
+      const text=await file.text();
+      try { await Cache.saveFile(file.name,text); } catch {}
+      UI.renderDocument(file.name,text);
+      const raw=await Chunker.process(text,file.name);
+      chunkCounts[file.name]=raw.length;
+      allChunks.push(...raw);
+    }
+    // Diagnostic: surface per-document chunk-count imbalance before it
+    // silently skews retrieval (see MAX_CANDIDATE_SHARE_PER_DOC for the fix).
+    console.log('[Ingest] Chunk counts per document:', chunkCounts, '— total:', allChunks.length);
+    const chunkCountVals=Object.values(chunkCounts);
+    if (chunkCountVals.length>1) {
+      const maxCount=Math.max(...chunkCountVals), totalCount=allChunks.length;
+      if (maxCount/totalCount > 0.4) {
+        const biggest=Object.entries(chunkCounts).find(([,n])=>n===maxCount)[0];
+        console.warn('[Ingest] "'+biggest+'" is '+Math.round(maxCount/totalCount*100)+'% of all chunks '+
+          '('+maxCount+'/'+totalCount+'). Large documents can dominate retrieval by sheer volume; '+
+          'MAX_CANDIDATE_SHARE_PER_DOC mitigates this, but splitting large documents into smaller files also helps.');
+      }
+    }
+    State.chatHistory=[]; State.chatTurns=[];
+
+    // Phase 2: embed (batch for API, sequential for TJS)
+    if (State.backend==='transformers') {
+      for (let i=0;i<allChunks.length;i++) {
+        this.progress('Vectoriseren… chunk '+(i+1)+'/'+allChunks.length,i/allChunks.length*92);
+        try { allChunks[i].vector=await Backends.embed(allChunks[i].text,'document'); }
+        catch(e) { alert('Embedding mislukt: '+e.message); throw e; }
+      }
+    } else {
+const B = Config.EMBED_BATCH_SIZE;
+  const total = allChunks.length;
+
+  for (let b = 0; b < total; b += B) {
+    const batch = allChunks.slice(b, b + B);
+    const end = Math.min(b + batch.length, total);
+
+    this.progress(
+      `Vectoriseren… chunks ${b + 1}–${end}/${total}`,
+      (b / total) * 92
+    );
+
+    try {
+      const vectors = await Backends.embedBatch(
+        batch.map(c => c.text),
+        'document'
+      );
+
+      batch.forEach((c, i) => {
+        c.vector = vectors[i];
+      });
+
+      this.progress(
+        `Vectoriseren… ${end}/${total} chunks embedded`,
+        (end / total) * 92
+      );
+    } catch (e) {
+      alert('Embedding mislukt: ' + e.message);
+      throw e;
+    }
+  }
+    }
+    State.chunks=allChunks;
+
+    // Phase 3: cache
+    this.progress('Sessie opslaan...',95);
+    try {
+      await Cache.saveSession({
+        backend:State.backend,chatUrl:State.chatUrl,embedUrl:State.embedUrl,rerankUrl:State.rerankUrl,
+        chatModel:State.chatModel,embedModel:State.embedModel,rerankModel:State.rerankModel,
+        switchMode:State.switch,
+        fileNames:docFiles.map(f=>f.name),
+        thesaurus:State.thesaurus?Array.from(State.thesaurus.entries()):null,
+      });
+      await Cache.saveChunks(allChunks);
+      this.progress('✓ Klaar — sessie opgeslagen',100);
+    } catch(e) { console.warn('[Cache] Save failed:',e); this.progress('✓ Klaar',100); }
+    UI.renderMermaid();
+  },
+};
+
+// ── RESTORE ───────────────────────────────────────────────────────────────────
+async function restoreSession(session, chunks, fileTexts) {
+  State.backend    = session.backend;
+  State.chatUrl    = session.chatUrl  || session.url || 'http://127.0.0.1:1234';
+  State.embedUrl   = session.embedUrl || session.url || 'http://127.0.0.1:1234';
+  State.rerankUrl  = session.rerankUrl|| session.url || 'http://127.0.0.1:1234';
+  State.chatModel  = session.chatModel || '';
+  State.embedModel = session.embedModel || '';
+  State.rerankModel= session.rerankModel || '';
+  State.chunks     = chunks;
+  State.thesaurus  = session.thesaurus ? new Map(session.thesaurus) : null;
+  State.switch     = session.backend==='llamacpp' && !!session.switchMode;
+  if (State.switch) await Switch.init();
+  State.chatHistory= []; State.chatTurns=[];
+
+  const names=session.fileNames||[];
+  for (const name of names) {
+    const f=fileTexts.find(f=>f.name===name);
+    if (f) UI.renderDocument(f.name,f.text);
+  }
+  UI.renderMermaid();
+
+  if (State.backend==='transformers') {
+    Setup.showPanel('panel-loading');
+    document.getElementById('load-text').textContent='TJS modellen herladen...';
+    document.getElementById('load-bar').value=0;
+    try { await Setup.loadTransformers(); }
+    catch(e) { alert('Modellen konden niet worden geladen: '+e.message); await Cache.clear(); Setup.showPanel('panel-choice'); return; }
+  }
+  launchApp(session.backend+(session.chatModel?' — '+session.chatModel:' — Browser AI'));
+}
+
+// ── EVENT WIRING ──────────────────────────────────────────────────────────────
+
+// Mode tabs
+document.getElementById('tab-chat').addEventListener('click', () => {
+  document.getElementById('app').classList.remove('doc-mode');
+  document.getElementById('tab-chat').classList.add('active');
+  document.getElementById('tab-doc').classList.remove('active');
+});
+document.getElementById('tab-doc').addEventListener('click', () => {
+  document.getElementById('app').classList.add('doc-mode');
+  document.getElementById('tab-doc').classList.add('active');
+  document.getElementById('tab-chat').classList.remove('active');
+});
+
+// Restore
+document.getElementById('btn-restore').addEventListener('click', async () => {
+  const btn=document.getElementById('btn-restore');
+  btn.disabled=true; btn.textContent='Herstellen...';
+  try {
+    const session=await Cache.loadSession(), chunks=await Cache.loadChunks(), fileTexts=await Cache.loadFiles();
+    if (!session||!chunks?.length) { alert('Cache beschadigd.'); await Cache.clear(); Setup.showPanel('panel-choice'); return; }
+    await restoreSession(session,chunks,fileTexts);
+  } catch(e) { alert('Herstel mislukt: '+e.message); Setup.showPanel('panel-choice'); }
+  finally { btn.disabled=false; btn.textContent='↺ Herstellen — vectoren reeds berekend'; }
+});
+document.getElementById('btn-new-session').addEventListener('click', async () => {
+  await Cache.clear().catch(()=>{}); Setup.showPanel('panel-choice');
+});
+
+// Backend choice
+document.getElementById('btn-choice-lms').addEventListener('click', () => { State.backend='lmstudio'; Setup.showPanel('panel-lmstudio'); });
+document.getElementById('btn-choice-llama').addEventListener('click', () => { State.backend='llamacpp'; Setup.showPanel('panel-llamacpp'); });
+document.getElementById('btn-choice-tjs').addEventListener('click', () => { State.backend='transformers'; Setup.showPanel('panel-transformers'); });
+
+// LM Studio
+document.getElementById('btn-lms-connect').addEventListener('click', async () => {
+  const url=document.getElementById('lms-url').value.replace(/\/+$/,'');
+  const btn=document.getElementById('btn-lms-connect');
+  btn.disabled=true; btn.textContent='Verbinden...';
+  State.chatUrl=State.embedUrl=State.rerankUrl=url;
+  try {
+    const models=await Setup.loadApiModels(url);
+    Setup.populateSelect('lms-chat',models,['granite','instruct']);
+    Setup.populateSelect('lms-embed',models,['nomic','embed']);
+    document.getElementById('lms-model-selects').hidden=false; btn.hidden=true;
+  } catch { alert('Kan LM Studio niet bereiken. Controleer server + CORS.'); btn.disabled=false; btn.textContent='Verbind met LM Studio'; }
+});
+document.getElementById('btn-lms-start').addEventListener('click', async () => {
+  const files=document.getElementById('lms-files').files;
+  if (!files.length) return alert('Selecteer minstens één markdown bestand.');
+  State.chatModel=document.getElementById('lms-chat').value;
+  State.embedModel=document.getElementById('lms-embed').value;
+  document.getElementById('btn-lms-start').hidden=true; Setup.showPanel('panel-loading');
+  await Setup.ingestFiles(files); launchApp('LM Studio — '+State.chatModel);
+});
+
+// llama.cpp — per-port URLs
+document.getElementById('btn-llama-connect').addEventListener('click', async () => {
+  State.chatUrl  = document.getElementById('llama-chat-url').value.replace(/\/+$/,'');
+  State.embedUrl = document.getElementById('llama-embed-url').value.replace(/\/+$/,'');
+  State.rerankUrl= document.getElementById('llama-rerank-url').value.replace(/\/+$/,'');
+  const btn=document.getElementById('btn-llama-connect');
+  btn.disabled=true; btn.textContent='Verbinden...';
+  try {
+    const [chatR,embedR,rerankR]=await Promise.allSettled([
+      Setup.loadApiModels(State.chatUrl),
+      Setup.loadApiModels(State.embedUrl),
+      Setup.loadApiModels(State.rerankUrl),
+    ]);
+    if (chatR.status==='fulfilled')  Setup.populateSelect('llama-chat',  chatR.value,  ['granite','instruct']);
+    if (embedR.status==='fulfilled') Setup.populateSelect('llama-embed', embedR.value, ['nomic','embed']);
+    const withNone=['(geen reranker)',...(rerankR.status==='fulfilled'?rerankR.value:[])];
+    Setup.populateSelect('llama-rerank',withNone,['rerank','bge']);
+    document.getElementById('llama-model-selects').hidden=false; btn.hidden=true;
+    const isSwitch=await Switch.detect(chatR.status==='fulfilled'?chatR.value:[]);
+    document.getElementById('llama-switch').checked=isSwitch;
+    if (isSwitch) document.getElementById('llama-switch-note').textContent='Granite Switch gedetecteerd — adapter-flows ingeschakeld.';
+  } catch(e) { alert('Verbindingsfout: '+e.message); btn.disabled=false; btn.textContent='Verbind met alle poorten'; }
+});
+document.getElementById('btn-llama-start').addEventListener('click', async () => {
+  const files=document.getElementById('llama-files').files;
+  if (!files.length) return alert('Selecteer minstens één markdown bestand.');
+  State.chatModel  =document.getElementById('llama-chat').value;
+  State.embedModel =document.getElementById('llama-embed').value;
+  const rerank     =document.getElementById('llama-rerank').value;
+  State.rerankModel=rerank==='(geen reranker)'?'':rerank;
+  State.switch=document.getElementById('llama-switch').checked;
+  document.getElementById('btn-llama-start').hidden=true; Setup.showPanel('panel-loading');
+  if (State.switch) await Switch.init();
+  await Setup.ingestFiles(files);
+  launchApp('llama.cpp — '+State.chatModel+(State.switch?' (Switch)':'')+(State.rerankModel?' + reranker':''));
+});
+
+// Transformers.js
+document.getElementById('btn-tjs-load').addEventListener('click', async () => {
+  const btn=document.getElementById('btn-tjs-load'); btn.disabled=true;
+  document.getElementById('tjs-progress').hidden=false;
+  try { await Setup.loadTransformers(); document.getElementById('tjs-file-section').hidden=false; }
+  catch(e) { document.getElementById('tjs-prog-text').textContent='Fout: '+e.message; btn.disabled=false; }
+});
+document.getElementById('btn-tjs-start').addEventListener('click', async () => {
+  const files=document.getElementById('tjs-files').files;
+  if (!files.length) return alert('Selecteer minstens één markdown bestand.');
+  document.getElementById('btn-tjs-start').hidden=true; Setup.showPanel('panel-loading');
+  await Setup.ingestFiles(files); launchApp('Browser AI — Granite 4.0 Micro');
+});
+
+// Chat controls
+document.getElementById('new-search-btn').addEventListener('click', () => {
+  State.forceNewSearch=true; State.lastChunks=null;
+  const btn=document.getElementById('new-search-btn');
+  btn.style.background='var(--primary)'; setTimeout(()=>{btn.style.background='#888';},800);
+});
+document.getElementById('input-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const input=document.getElementById('chat-input'), sendBtn=document.getElementById('send-btn');
+  const text=input.value.trim(); if (!text) return;
+  input.value=''; UI.addMessage('user',text); UI.clearHighlights(); sendBtn.disabled=true;
+  try { await Pipeline.run(text); }
+  catch(err) { UI.addMessage('bot','Systeemfout: '+err.message); console.error(err); }
+  finally { sendBtn.disabled=false; }
+});
+document.getElementById('chat-input').addEventListener('keydown', e => {
+  if (e.key==='Enter'&&!e.shiftKey) { e.preventDefault(); document.getElementById('input-form').requestSubmit(); }
+});
+
+// Clear documents
+document.getElementById('clear-docs-btn').addEventListener('click', async () => {
+  if (!confirm('Wis gecachede documenten en herstart?')) return;
+  await Cache.clear().catch(()=>{});
+  Object.assign(State,{
+    backend:null,chatUrl:'http://127.0.0.1:1234',embedUrl:'http://127.0.0.1:1234',
+    rerankUrl:'http://127.0.0.1:1234',chatModel:'',embedModel:'',rerankModel:'',
+    tjsTokenizer:null,tjsEmbedModel:null,tjsRerankTokenizer:null,tjsRerankModel:null,
+    tjsLLMPipeline:null,tjsMath:null,TextStreamer:null,
+    chunks:[],chatHistory:[],chatTurns:[],switch:false,slotMain:0,slotAux:0,jsonState:{intent:'Onbekend',facts_gathered:[]},
+    lastChunks:null,forceNewSearch:false,thesaurus:null,
+  });
+  document.getElementById('docs-container').innerHTML='';
+  document.getElementById('chat-history').innerHTML='';
+  document.getElementById('state-output').textContent='{\n  "status": "Wachtend op invoer..."\n}';
+  document.getElementById('chat-label').textContent='AIbaarAI — Multidisciplinair Overleg';
+  document.getElementById('app').hidden=true;
+  Setup.showPanel('panel-choice'); document.getElementById('setup-dialog').showModal();
+});
+
+// Document editor controls
+document.getElementById('template-upload').addEventListener('change', async e => {
+  const file=e.target.files[0]; if (!file) return;
+  const text=await file.text();
+  Doc.resetResults();
+  const ta = document.getElementById('doc-source');
+  ta.value = text;
+  Doc.save(text);
+  ta.dispatchEvent(new Event('input'));  // triggers the existing input listener → render
+  document.getElementById('doc-status').textContent='✓ Template geladen: '+file.name;
+});
+
+let docRenderTimer=null;
+document.getElementById('doc-source').addEventListener('input', () => {
+  const source=document.getElementById('doc-source').value;
+  Doc.save(source);
+  clearTimeout(docRenderTimer);
+  docRenderTimer=setTimeout(()=>Doc.render(source),350);
+});
+
+// Event delegation for doc run buttons
+document.getElementById('doc-preview').addEventListener('click', async e => {
+  const btn=e.target.closest('[data-run]');
+  if (!btn||btn.disabled||State.docRunning) return;
+  const idx=parseInt(btn.dataset.run);
+  await Doc.runBlockByIndex(idx);
+});
+
+document.getElementById('doc-play-all').addEventListener('click', () => Doc.runAll());
+document.getElementById('doc-stop').addEventListener('click', () => {
+  State.docStopRequested=true;
+  document.getElementById('doc-status').textContent='⏹ Stoppen...';
+});
+document.getElementById('doc-download').addEventListener('click', () => {
+  const source=document.getElementById('doc-source').value;
+  const out=Doc.serialize(source);
+  const blob=new Blob([out],{type:'text/markdown'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a'); a.href=url; a.download='document.md'; a.click();
+  URL.revokeObjectURL(url);
+});
+
+// ── HELPERS ───────────────────────────────────────────────────────────────────
+function launchApp(label) {
+  const thesNote=State.thesaurus
+    ? ' · 📚 '+Array.from(State.thesaurus.entries()).filter(([k,v])=>k===v.term.toLowerCase()).length+' termen'
+    : '';
+  document.getElementById('chat-label').textContent='AIbaarAI — '+label+thesNote;
+  document.getElementById('setup-dialog').close();
+  document.getElementById('app').hidden=false;
+
+  // Restore template + results from localStorage
+  Doc.loadResults();
+  const savedDoc=Doc.load();
+  if (savedDoc) {
+    document.getElementById('doc-source').value=savedDoc;
+    Doc.render(savedDoc);
+  }
+}
+
+window.nukeTjsCache = async () => {
+  await Cache.clear().catch(()=>{});
+  if ('caches' in window) { const keys=await caches.keys(); await Promise.all(keys.map(k=>caches.delete(k))); }
+  localStorage.clear(); console.log('All caches cleared.');
+};
+
+// ── INIT ──────────────────────────────────────────────────────────────────────
+(async function init() {
+  if (typeof marked==='undefined') alert('CRITICAL: marked.min.js ontbreekt.');
+  if (typeof mermaid!=='undefined') mermaid.initialize({startOnLoad:false,theme:'default'});
+  document.getElementById('setup-dialog').addEventListener('cancel',e=>e.preventDefault());
+
+  try {
+    const session=await Cache.loadSession(), chunks=await Cache.loadChunks();
+    if (session&&chunks?.length>0) {
+      const fileTexts=await Cache.loadFiles();
+      const date=new Date(session.savedAt).toLocaleString('nl-NL',{dateStyle:'short',timeStyle:'short'});
+      document.getElementById('restore-info').innerHTML=
+        '<strong>Backend:</strong> '+(session.backend||'?')+'<br>'+
+        '<strong>Model:</strong> '+(session.chatModel||'Browser AI')+'<br>'+
+        '<strong>Chat URL:</strong> '+(session.chatUrl||session.url||'')+'<br>'+
+        '<strong>Documenten:</strong> '+(session.fileNames||[]).join(', ')+'<br>'+
+        '<strong>Chunks:</strong> '+chunks.length+' vectorized<br>'+
+        '<strong>Opgeslagen:</strong> '+date;
+      Setup.showPanel('panel-restore');
+      document.getElementById('setup-dialog').showModal();
+      return;
+    }
+  } catch(e) { console.warn('[Cache] Load error:',e); }
+
+  Setup.showPanel('panel-choice');
+  document.getElementById('setup-dialog').showModal();
+})();
+</script>
+</body>
+</html>
