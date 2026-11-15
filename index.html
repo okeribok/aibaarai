@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AIbaarAI RAG en document generator v2.1</title>
+  <title>AIbaarAI RAG en document generator v2.2</title>
   <!--
     Required files (next to index.html): marked.min.js
     Optional: transformers.min.js, mermaid.min.js
@@ -396,7 +396,7 @@ steps[19]:
       Dutch,"Ik weet het niet — de geladen documenten bevatten geen informatie die deze vraag beantwoordt."
       German,"Ich weiß es nicht — die geladenen Dokumente enthalten keine Informationen, die diese Frage beantworten."
       French,"Je ne sais pas — les documents chargés ne contiennent aucune information qui répond à cette question."
-      Spanish,"No lo sé — los documentos cargados no contienen información que responda a esta pregunta."
+      Spanish,"No lo sé — los documentos cargados no contienen información que responda a esta pergunta."
       Italian,"Non lo so — i documenti caricati non contengono informazioni che rispondano a questa domanda."
       Portuguese,"Não sei — os documentos carregados não contêm informações que respondam a esta pergunta."
       Czech,"Nevím — načtené dokumenty neobsahují informace, které by tuto otázku zodpovídaly."
@@ -688,10 +688,26 @@ server:
   marker_sep: "\n\n"
   n_probs: 20
   stop[2]: <|end_of_text|>,<|start_of_role|>
-adapters[3]{name,trigger,token,marker}:
-  answerability,role,<|answerability|>,
-  query_rewrite,role,<|query_rewrite|>,
-  decisions,marker,,"### DECISION"
+note_adapters: Columns — token = control token that replaces the assistant role marker; marker = trigger text placed in the last user turn (turn: prefix) or as its own user turn (turn: new), followed by sep; start = text put at the very start of the prompt (LoRA). Switch.probe() tries candidate layouts per adapter, applies the best and prints the rows to paste here.
+adapters[10]{name,token,marker,turn,sep,start}:
+  answerability,<|answerability|>,,,,
+  query_rewrite,<|query_rewrite|>,,,,
+  query_clarification,<|query_clarification|>,,,,
+  decisions,,"### DECISION",prefix,"\n\n",
+  policy_guardrails,<|policy-guardrails|>,<guardian>,prefix,,
+  guardian_core,<|guardian-core|>,<guardian>,prefix,,
+  uncertainty,<|uncertainty|>,,,,
+  factuality_detection,<|factuality-detection|>,"<guardian>",prefix,,
+  factuality_correction,<|factuality-correction|>,,,,
+  hallucination_detection,,,,,<|hallucination_detection|>
+consts:
+  clarify_enabled: true
+  uncertainty_context: ground
+  purpose_policy: |
+    The assistant only helps with questions and writing tasks about the loaded document collection (documents: ${doc_list}) and the subjects, people, places and events those documents cover, for example the history, ingredients, production, regional cuisine and culture of pasta and closely related foods. Questions about a person, place or event that is covered by one of these documents are in scope. Requests about unrelated subjects (for example bananas or any other topic outside the collection), requests for medical, legal or financial advice, and requests that ask the assistant to judge, profile or identify private individuals are not allowed.
+  factual_criteria: "A factually incorrect response contains claims that are unsupported by, inconsistent with, or contradicted by the documents. A single inaccurate portion makes the whole response incorrect."
+  pii_criteria: |
+    The text discloses personal data of a real, living private person, as opposed to historical figures, authors, public figures, dishes or places that are subject matter of the documents. Personal data includes the name or nickname of the user, family members, friends, colleagues or dinner guests (for example "my aunt Maria", "our neighbour Jan"), and in particular special categories of personal data: health (allergies, coeliac disease, diabetes, diets for medical reasons), religious or philosophical beliefs (including dietary rules that reveal them, such as halal or kosher), sexual orientation or sex life, political opinions or trade-union membership, racial or ethnic origin, biometric or genetic data, and criminal records.
 convos:
   ground:
     system: |
@@ -707,6 +723,8 @@ convos:
     turns: chat
     turns_max: 6
     user: ${question}
+  qa:
+    user: ${standalone}
 </script>
 
 <script type="text/plain" id="flow-chat_switch">
@@ -717,7 +735,7 @@ models[3]{role,used_by}:
   embed,retrieve
   rerank,retrieve
 inputs[4]: question,prev_question,thes_terms,example_doc
-steps[24]:
+steps[35]:
   - use: chat.thes_hint
   - id: rewrite
     kind: adapter
@@ -733,16 +751,78 @@ steps[24]:
     on_error: fallback
     def: rewritten
     when: prev_question
-    then: |
-      Rewrite the final user question into a standalone question that is understandable without the conversation history. Keep the language of the question. Output JSON: {"rewritten_question": "<question>"}
   - id: standalone
     kind: set
     from: rewritten
     default: ${question}
     def: standalone
+  - id: scope
+    kind: judge
+    adapter: policy_guardrails
+    label: 🚦 Doel toetsen (policy-guardrails)...
+    layout: pair
+    slot: aux
+    max_tokens: 20
+    labels[3]: Yes,No,Ambiguous
+    good: Yes
+    amber: Ambiguous
+    green_at: 0.7
+    red_below: 0.35
+    on_error: fallback
+    def: scope
+    scenario: ${standalone}
+    protocol: |
+      As a compliance agent, your role is to decide whether a scenario is compliant with a given policy.
+
+      ### Criteria: Policy: ${purpose_policy}
+
+      ### Scoring Schema: If the scenario complies with the policy, answer {"score": "Yes"}. If it clearly violates the policy, answer {"score": "No"}. If you cannot tell, answer {"score": "Ambiguous"}.
+  - id: pii
+    kind: decide
+    adapter: decisions
+    label: 🛡️ Persoonsgegevens toetsen (decisions)...
+    slot: aux
+    state: ${question}
+    question: |
+      Does the State text contain personal data about a real, living private person (the user or someone they know)? Historical figures, authors, public figures, places and dishes that are subject matter are not personal data. If several categories apply, pick the most sensitive one.
+    options[8]{key,text}:
+      none,"No personal data about a private person"
+      person,"Name or identifying details of a private person (the user, family, friends, colleagues, dinner guests)"
+      health,"Health data (illness, allergy, coeliac disease, diabetes, a medical diet)"
+      religion,"Religious or philosophical belief, including dietary rules that reveal it (halal, kosher)"
+      sexuality,"Sexual orientation or sex life"
+      political,"Political opinion or trade-union membership"
+      ethnicity,"Racial or ethnic origin"
+      other,"Other sensitive data (biometric, genetic, criminal record, financial hardship)"
+    good: none
+    green_at: 0.8
+    red_below: 0.4
+    fallback: none
+    on_error: fallback
+    def: pii
+  - id: pii_guard
+    kind: judge
+    adapter: guardian_core
+    label: 🛡️ Persoonsgegevens toetsen (guardian-core)...
+    layout: pair
+    slot: aux
+    max_tokens: 20
+    labels[2]: yes,no
+    good: no
+    green_at: 0.8
+    red_below: 0.4
+    on_error: fallback
+    def: pii_guard
+    scenario: ${question}
+    protocol: |
+      As a judge agent, your role is to help assess whether the provided text meets the given judging criteria.
+
+      ### Criteria: ${pii_criteria}
+
+      ### Scoring Schema: If the last user's text meets the criteria, return 'yes'; otherwise, return 'no'.
   - use: chat.p0
     slot: aux
-    max_tokens: 120
+    max_tokens: 250
     expect[2]{field,type,allowed,fallback}:
       search_terms,list,,
       likely_contains,list,,
@@ -797,16 +877,102 @@ steps[24]:
       Chinese,"Chinese"
       other,"Any other language"
     fallback: other
+    prefer: Dutch
+    prefer_at: 0.0005
+    prefer_over: German
     on_error: fallback
     def: p0.language
   - use: chat.terms
   - use: chat.lang_name
     unless: other
   - use: chat.idk
+    table[13]{lang,text}:
+      default,"Ik weet het niet — de geladen documenten bevatten geen informatie die deze vraag beantwoordt."
+      English,"I don't know — the loaded documents contain no information that answers this question."
+      Dutch,"Ik weet het niet — de geladen documenten bevatten geen informatie die deze vraag beantwoordt."
+      German,"Ich weiß es nicht — die geladenen Dokumente enthalten keine Informationen, die diese Frage beantworten."
+      French,"Je ne sais pas — les documents chargés ne contiennent aucune information qui répond à cette question."
+      Spanish,"No lo sé — los documentos cargados no contienen información que responda a esta pergunta."
+      Italian,"Non lo so — i documenti caricati non contengono informazioni che rispondano a questa domanda."
+      Portuguese,"Não sei — os documentos carregados não contêm informações que respondam a esta pergunta."
+      Czech,"Nevím — načtené dokumenty neobsahují informace, které by tuto otázku zodpovídaly."
+      Arabic,"لا أعرف — المستندات المحمّلة لا تحتوي على معلومات تجيب عن هذا السؤال."
+      Japanese,"わかりません — 読み込まれた文書には、この質問に答える情報が含まれていません。"
+      Korean,"모르겠습니다 — 불러온 문서에는 이 질문에 답하는 정보가 없습니다."
+      Chinese,"我不知道 — 已加载的文档中没有能回答这个问题的信息。"
+  - id: vague
+    kind: decide
+    adapter: decisions
+    label: 🔎 Vraag toetsen op duidelijkheid (decisions)...
+    slot: aux
+    state: ${standalone}
+    question: Can this question be searched on its own? It is vague when what it is about is missing or is only a pronoun (it, he, het, hij, dat) with nothing it refers to, for example "When was it invented?" or "Wanneer werd het uitgevonden?".
+    options[2]{key,text}:
+      clear,"The question names what it is about"
+      vague,"What the question is about is missing or unspecified"
+    flag_key: vague
+    fallback: clear
+    on_error: fallback
+    def: vague_kind
+  - id: clarify0
+    kind: adapter
+    adapter: query_clarification
+    label: ❓ Verduidelijking vragen (query_clarification)...
+    convo: qa
+    slot: aux
+    max_tokens: 80
+    parse: field
+    field: clarification
+    clear: CLEAR
+    max_chars: 300
+    fallback: ""
+    on_error: fallback
+    def: clarify_q0
+    when: vague_flag
+  - id: need_clarify0
+    kind: stop_if
+    var: clarify_q0
+    tag: clarify
+    reply: ❓ ${clarify_q0}
+  - id: task
+    kind: decide
+    adapter: decisions
+    label: 🧭 Soort verzoek bepalen (decisions)...
+    slot: aux
+    state: ${standalone}
+    question: Is the user asking a factual question that has a checkable answer, or asking for creative or generative writing (a play, story, poem, draft, or a list of ideas)?
+    options[2]{key,text}:
+      fact,"A factual question with a checkable answer"
+      write,"Creative or generative writing, brainstorming or a draft"
+    flag_key: write
+    fallback: fact
+    on_error: fallback
+    def: task_kind
   - use: chat.retrieve
     query: ${standalone}
+    min_cosine: 0
   - use: chat.lang_instr
   - use: chat.ctx
+  - id: clarify
+    kind: adapter
+    adapter: query_clarification
+    label: ❓ Dubbelzinnigheid toetsen (query_clarification)...
+    convo: ground
+    slot: main
+    max_tokens: 80
+    parse: field
+    field: clarification
+    clear: CLEAR
+    max_chars: 300
+    fallback: ""
+    on_error: fallback
+    def: clarify_q
+    when: clarify_enabled
+  - id: need_clarify
+    kind: stop_if
+    var: clarify_q
+    tag: clarify
+    reply: ❓ ${clarify_q}
   - id: p1
     kind: llm
     role: chat
@@ -840,6 +1006,7 @@ steps[24]:
     kind: cites
     of: p1
     context_step: ctx
+    fallback_all: 5
   - id: judge
     kind: adapter
     adapter: answerability
@@ -858,8 +1025,6 @@ steps[24]:
       no,"unanswerable|not answerable"
       yes,"answerable"
     def: judge
-  - use: chat.answerable_ok
-  - use: chat.need_answerable
   - use: chat.need_citations
   - use: chat.shape_hint
   - use: chat.decision_line
@@ -873,9 +1038,63 @@ steps[24]:
     temperature: 0.3
     def: answer
     then: |
-      ${decision_line}Answer the question above with a practical markdown answer, using ONLY the documents. If they do not contain the answer, say so in one sentence and stop. ${lang_instr}${shape_hint} Use markdown. Be concise.
+      ${decision_line}Answer the question above with a practical markdown answer, using ONLY the documents. If they do not contain the answer, say so in one sentence and stop. Do not list sources, document names or chunk ids. ${lang_instr}${shape_hint} Use markdown. Be concise.
   - use: chat.p3
     slot: aux
+  - id: uncert
+    kind: judge
+    adapter: uncertainty
+    label: 🎲 Zekerheid inschatten (uncertainty)...
+    convo: ${uncertainty_context}
+    with_answer: answer
+    slot: main
+    max_tokens: 12
+    labels[10]: 0,1,2,3,4,5,6,7,8,9
+    digits: true
+    on_error: fallback
+    def: uncert
+  - id: factual
+    kind: judge
+    adapter: guardian_core
+    when: "!task_flag"
+    label: 🔬 Feitelijkheid toetsen (factuality-detection)...
+    convo: ground
+    with_answer: answer
+    slot: main
+    max_tokens: 20
+    then: |
+      As a judge agent, your role is to help assess whether the provided text meets the given judging criteria.
+
+      ### Criteria: ${factual_criteria}
+
+      ### Scoring Schema: If the last assistant's text meets the criteria, return 'yes'; otherwise, return 'no'.
+    labels[2]: yes,no
+    good: no
+    flag: yes
+    flag_at: 0.5
+    green_at: 0.8
+    red_below: 0.4
+    on_error: fallback
+    def: factual
+  - id: correct
+    kind: adapter
+    adapter: factuality_correction
+    label: 🩹 Herstel voorstellen (factuality-correction)...
+    convo: ground
+    with_answer: answer
+    slot: main
+    max_tokens: 900
+    parse: field
+    field: correction
+    clear: none
+    max_chars: 6000
+    fallback: ""
+    on_error: fallback
+    def: corrected
+    when: factual.flagged
+  - id: checks
+    kind: checks
+    from[8]: scope,pii_signal,pii_guard,judge,uncert,factual,corrected,task_flag
 </script>
 
 <script type="text/plain" id="flow-doc_prompt_switch">
@@ -888,12 +1107,13 @@ models[3]{role,used_by}:
 consts:
   default_rewrite: Write a clear, professional document section based on the research findings.
 inputs[6]: question,docs,rewrite_given,do_rewrite,thes_terms,example_doc
-steps[13]:
+steps[16]:
   - use: chat.thes_hint
   - id: standalone
     kind: set
     value: ${question}
     def: standalone
+  - use: chat_switch.scope
   - use: chat_switch.p0
   - use: chat.terms
   - use: chat_switch.retrieve
@@ -922,6 +1142,31 @@ steps[13]:
   - use: doc_prompt.rewrite_instr
   - use: doc_prompt.rewrite
   - use: doc_prompt.output
+  - use: chat_switch.uncert
+    label: 🎲 Zekerheid inschatten (uncertainty)...
+    with_answer: output
+    def: block_uncert
+  - use: chat_switch.checks
+    from[2]: scope,block_uncert
+</script>
+
+<script type="text/plain" id="flow-deep_check">
+flow: deep_check
+note: User-triggered deep check of one answer. hallucination_detection is the only LoRA in the app: it re-reads ALL context chunks plus the answer in one call (full prefill, so it never runs inside the normal turn) and returns a faithfulness verdict per answer sentence.
+inputs[3]: standalone,context,answer
+steps[1]:
+  - id: hallu
+    kind: hallu
+    adapter: hallucination_detection
+    label: 🔎 Zinnen controleren (hallucination_detection)...
+    convo: ground
+    answer: answer
+    slot: main
+    max_tokens: 900
+    on_error: fallback
+    def: hallu
+    then: |
+      Split the last assistant response into individual sentences. For each sentence, identify whether it is faithful to the provided documents. Output a JSON array with one object per sentence: {"r": <sentence number>, "f": "faithful" | "unfaithful" | "partial" | "NA", "e": "<short explanation>"}.
 </script>
 
 <script type="text/plain" id="flow-doc_eval_switch">
@@ -1252,7 +1497,12 @@ const Flow = {
   async run(name, input, hooks = {}) {
     name = this.pick(name);
     const flow = this.load(name), steps = this.steps(name);
-    const V = { ...(flow.consts || {}), ...input };
+    const swConsts = State.switch && document.getElementById('flow-switch') ? (this.load('switch').consts || {}) : {};
+    const V = { ...swConsts, ...(flow.consts || {}), ...input };
+    if (State.switch) {   // the policy is anchored on what is actually loaded
+      V.doc_list = V.doc_list || [...new Set((State.chunks || []).map(c => c.docName))].map(n => String(n).replace(/\.[a-z0-9]+$/i, '')).join(', ') || 'none';
+      if (typeof V.purpose_policy === 'string') V.purpose_policy = V.purpose_policy.replace('${doc_list}', V.doc_list);
+    }
     for (const step of steps) {
       if (step.when !== undefined && !this.truthy(V, step.when)) continue;
       const handler = this['_' + step.kind];
@@ -1260,7 +1510,11 @@ const Flow = {
       if (step.label && hooks.status) hooks.status(step.label, step);
       if (hooks.before) await hooks.before(step.id, V, step);
       const stopReply = await handler.call(this, step, V, hooks, steps);
-      if (stopReply !== undefined) return { stopped: true, reply: stopReply, vars: V };
+      if (stopReply !== undefined) {
+        const cs = steps.find(x => x.kind === 'checks');   // a stopped turn still reports the signals it has (scope, PII…)
+        if (cs && step !== cs) this._checks(cs, V);
+        return { stopped: true, reply: stopReply, vars: V, stop: { id: step.id, tag: step.tag } };
+      }
       if (hooks.after) await hooks.after(step.id, V, step);
     }
     return { stopped: false, vars: V };
@@ -1287,6 +1541,7 @@ const Flow = {
   async _retrieve(step, V, hooks) {
     let chunks = step.reuse === 'prior' && hooks.reuse ? hooks.reuse() : null;
     V.reused = !!chunks;
+    if (chunks) console.log('[Retrieve] ♻ reused ' + chunks.length + ' chunks of the previous search ("Nieuwe zoekopdracht" starts a fresh one)');
     if (!chunks) chunks = await Retrieval.search(this.interp(step.query, V), V[step.terms] || [], { ...step, docs: V[step.docs] }, hooks.phase);
     V[step.def] = chunks;
     if (!chunks.length && step.on_empty === 'stop') return this.interp(step.reply, V);
@@ -1366,7 +1621,8 @@ const Flow = {
   _convoMsgs(step, V, hooks) {
     const m = step.continue
       ? [...V[step.continue + '_msgs'], { role: 'assistant', content: V[step.continue + '_label'] }]
-      : this._convo(step.convo, V, hooks);
+      : this._convo(this.interp(step.convo, V), V, hooks);
+    if (step.with_answer) m.push({ role: 'assistant', content: this.str(this.lookup(V, step.with_answer)) });
     if (step.then) m.push({ role: 'user', content: this.interp(step.then, V) });
     return m;
   },
@@ -1441,6 +1697,7 @@ const Flow = {
       try { v = JSON.parse(t.replace(/^`{3}(?:json)?\s*/i, '').replace(/\s*`{3}\s*$/, ''))[step.field]; }
       catch { v = /^\s*[{[]/.test(t) ? '' : t.replace(/^["']|["']$/g, ''); }
       v = typeof v === 'string' ? v.trim() : '';
+      if (step.clear && v.toLowerCase() === String(step.clear).toLowerCase()) v = '';
       if (step.max_chars && v.length > step.max_chars) v = '';
       V[step.def] = v || (step.fallback ?? '');
     } else {
@@ -1467,11 +1724,19 @@ const Flow = {
     let best = null, probs = {};
     try {
       const reg = Switch.adapter(step.adapter || 'decisions');
-      const r = await Switch.complete(Switch.adapterPrompt(reg, [first, { role: 'user', content: body }], true),
+      const r = await Switch.complete(Switch.adapterPrompt(reg, [first, { role: 'user', content: body }]),
         { slot: step.slot, temperature: 0, n_predict: 1, n_probs: Switch.nProbs(opts.length), label: step.id });
       const byLabel = Switch.labelProbs(r, opts.map(o => o.label));
       best = opts.find(o => o.label === byLabel.best) || null;
       opts.forEach(o => { probs[o.key] = byLabel.probs[o.label] || 0; });
+      // app-level prior: a short Dutch question ("Wie was Marco Polo?") can read as German. If the preferred option
+      // keeps at least `prefer_at` of the mass, it wins.
+      const pref = step.prefer !== undefined ? opts.find(o => o.key === String(step.prefer)) : null;
+      if (pref) console.log('[' + step.id + '] ' + Object.entries(probs).filter(([, v]) => v >= 0.001).map(([k, v]) => k + ' ' + (v * 100).toFixed(1) + '%').join(' · '));
+      if (pref && best && best !== pref && probs[pref.key] >= (step.prefer_at ?? 0.1) && (!step.prefer_over || String(step.prefer_over).split('|').includes(best.key))) {
+        console.log('[' + step.id + '] prior: ' + pref.key + ' ' + Math.round(probs[pref.key] * 100) + '% ≥ ' + Math.round((step.prefer_at ?? 0.1) * 100) + '% → over ' + best.key + ' ' + Math.round(probs[best.key] * 100) + '%');
+        best = pref;
+      }
     } catch (e) {
       if (step.on_error !== 'fallback') throw e;
       console.warn('[' + step.id + '] degrading:', e);
@@ -1481,8 +1746,106 @@ const Flow = {
     V[step.id + '_probs'] = probs;
     V[step.id + '_pct'] = best ? Math.round((probs[best.key] || 0) * 100) : '';
     V[step.id + '_label'] = winner ? winner.label : '';
+    if (step.flag_key !== undefined) V[step.id + '_flag'] = best && best.key === String(step.flag_key) && (probs[best.key] || 0) >= 0.5 ? '1' : '';
     V[step.id + '_msgs'] = [first, { role: 'user', content: body }];   // plain turns: no control token / marker
+    if (step.good !== undefined) {   // traffic light: probability mass on the "good" option
+      const pg = probs[String(step.good)] ?? 0;
+      V[step.id + '_signal'] = { label: best ? best.key : null, p_good: pg, pct: Math.round(pg * 100), probs,
+        light: best ? Switch.light(pg, step.green_at ?? 0.7, step.red_below ?? 0.35) : 'unknown' };
+      const sg = V[step.id + '_signal'];
+      console.log('[check] ' + step.id + ': ' + sg.light + ' | ' + sg.label + ' | P(' + step.good + ')=' + sg.pct + '%',
+        Object.fromEntries(Object.entries(probs).map(([k, v]) => [k, Math.round(v * 100) + '%'])));
+    }
   },
+
+  /**
+   * judge: an aLoRA that answers with a JSON label ({"score": "Yes"}). The label's probability is read from the
+   * token probabilities at the label position, so every verdict comes with a calibrated confidence.
+   *  layout: convo (convo [+with_answer] [+then]) | pair (two user turns: `scenario`, then `protocol`)
+   *  good/green_at/red_below → traffic light on P(good) · flag/flag_at → V[def].flagged · digits → conf = Σ p(d)·(0.1d+0.05)
+   */
+  async _judge(step, V, hooks) {
+    const labels = (step.labels || []).map(String);
+    const out = { label: null, probs: {}, raw: '', light: 'unknown', error: false };
+    try {
+      const reg = Switch.adapter(step.adapter);
+      const msgs = step.layout === 'pair'
+        ? [{ role: 'user', content: this.interp(step.scenario, V).trim() }, { role: 'user', content: this.interp(step.protocol, V).trim() }]
+        : this._convoMsgs(reg.nothen ? { ...step, then: undefined } : step, V, hooks);
+      const r = await Switch.complete(Switch.adapterPrompt(reg, msgs),
+        { slot: step.slot, temperature: 0, n_predict: step.max_tokens || 20, n_probs: Switch.nProbs(labels.length), label: step.id });
+      const rd = Switch.readLabel(r, labels);
+      Object.assign(out, { label: rd.label, probs: rd.probs, raw: r.text.trim() });
+      // an aLoRA that is really active writes {"score": …}; anything else (markdown, prose, echoed context) means the layout is wrong:
+      // report "unknown" instead of a verdict (never flag, never trigger a correction on it)
+      if (!/score/i.test(out.raw)) { out.label = null; out.probs = {}; out.invalid = true; console.warn('[' + step.id + '] no {"score"} in output → unknown (layout wrong? run Switch.probe)', JSON.stringify(out.raw).slice(0, 80)); }
+      const find = x => labels.find(l => l.toLowerCase() === String(x).toLowerCase());
+      if (step.digits) {
+        out.conf = labels.reduce((a, l) => a + (out.probs[l] || 0) * (0.1 * Number(l) + 0.05), 0);
+        out.pct = out.label === null ? '' : Math.round(out.conf * 100);
+        out.light = out.label === null ? 'unknown' : 'info';
+      } else if (step.good !== undefined && out.label !== null) {
+        out.p_good = out.probs[find(step.good)] ?? 0;
+        out.pct = Math.round(out.p_good * 100);
+        if (step.amber !== undefined) {   // compliant / ambiguous / non-compliant: the winning label decides the colour
+          const win = find(out.label);
+          out.light = win === find(step.good) ? (out.p_good >= (step.green_at ?? 0.7) ? 'green' : 'amber') : win === find(step.amber) ? 'amber' : 'red';
+        } else out.light = Switch.light(out.p_good, step.green_at ?? 0.7, step.red_below ?? 0.35);
+      }
+      if (step.flag !== undefined) out.flagged = (out.probs[find(step.flag)] || 0) >= (step.flag_at ?? 0.5);
+    } catch (e) {
+      if (step.on_error !== 'fallback') throw e;
+      console.warn('[' + step.id + '] degrading:', e); out.error = true;
+    }
+    V[step.def] = out;
+    console.log('[check] ' + step.id + ': ' + out.light + ' | ' + out.label + (out.pct !== '' && out.pct !== undefined ? ' | ' + out.pct + '%' : '')
+      + (out.flagged !== undefined ? ' | flagged=' + out.flagged : ''), JSON.stringify(out.raw),
+      Object.fromEntries(Object.entries(out.probs).map(([k, v]) => [k, Math.round(v * 100) + '%'])));
+  },
+
+  /**
+   * hallu: hallucination_detection (the one LoRA). Context chunks as documents, the answer split into <rN> tagged
+   * sentences as an assistant turn, an instruction as the last user turn. V[def] = {items:[{idx,text,faith,why}], counts, light, raw}.
+   * (tags / instruct can be switched off per layout — see Switch.probe.)
+   */
+  async _hallu(step, V, hooks) {
+    const res = { items: [], sentences: [], counts: {}, light: 'unknown', raw: '', error: false };
+    try {
+      const reg = Switch.adapter(step.adapter);
+      const sents = Switch.splitSentences(this.str(V[step.answer]));
+      const msgs = this._convo(this.interp(step.convo, V), V, hooks);
+      msgs.push({ role: 'assistant', content: sents.map((x, i) => (reg.tags === false ? '' : '<r' + i + '> ') + x).join(' ') });
+      if (reg.instruct !== false && step.then) msgs.push({ role: 'user', content: this.interp(step.then, V) });
+      const r = await Switch.complete(Switch.adapterPrompt(reg, msgs),
+        { slot: step.slot, temperature: 0, n_predict: step.max_tokens || 900, label: step.id });
+      res.raw = r.text; res.sentences = sents;
+      res.items = Switch.parseFaithfulness(r.text, sents) || [];
+      for (const it of res.items) res.counts[it.faith] = (res.counts[it.faith] || 0) + 1;
+      res.light = !res.items.length ? 'unknown' : res.counts.unfaithful ? 'red' : res.counts.partial ? 'amber' : 'green';
+    } catch (e) {
+      if (step.on_error !== 'fallback') throw e;
+      console.warn('[' + step.id + '] degrading:', e); res.error = true;
+    }
+    V[step.def] = res;
+    console.log('[check] ' + step.id + ': ' + res.light, res.counts);
+    if (res.items.length) console.table(res.items.map(i => ({ r: i.idx, faith: i.faith, sentence: (i.text || '').slice(0, 80), why: i.why.slice(0, 100) })));
+  },
+
+  /** checks: collect the signals of a turn (primitive fields only) into V.checks, State.chatChecks and the console */
+  _checks(step, V) {
+    const sum = {};
+    for (const p of step.from || []) {
+      const v = this.lookup(V, p);
+      if (v === undefined || v === null || v === '') continue;
+      sum[p] = typeof v === 'object' ? Object.fromEntries(Object.entries(v).filter(([k, x]) => typeof x !== 'object' && k !== 'raw')) : { text: String(v).slice(0, 200) };
+    }
+    V.checks = sum;
+    State.chatChecks.push({ ts: Date.now(), question: V.question, checks: sum });
+    console.log('[checks] ' + Object.entries(sum).map(([k, v]) => k + '=' + (v.light || v.answerable || v.label || (v.text ? 'text' : '?')) + (v.pct !== undefined && v.pct !== '' ? ' ' + v.pct + '%' : '')).join(' · '));
+  },
+
+  /** stop_if: stop the flow with `reply` when the variable is non-empty (clarification questions) */
+  _stop_if(step, V) { if (this.truthy(V, step.var)) return this.interp(step.reply, V); },
 
   /** scan_retry: if `of` found no evidence, scan the whole corpus for the terms and re-ask once */
   async _scan_retry(step, V, hooks, steps) {
@@ -1525,6 +1888,10 @@ const Flow = {
       const text = V[step.of + '_raw'] || '';
       valid.filter(v => text.includes(v.id)).forEach(v => got.push({ document: v.doc, chunkId: v.id }));
     }
+    if (!got.length && step.fallback_all) {   // the model cited nothing (typical for writing/brainstorm tasks): the retrieved chunks are the sources
+      valid.slice(0, step.fallback_all === true || step.fallback_all === 'true' ? 5 : Number(step.fallback_all)).forEach(v => got.push({ document: v.doc, chunkId: v.id }));
+      if (got.length) console.log('[' + step.id + '] no citations from pass 1 → using the ' + got.length + ' retrieved chunks');
+    }
     if (!got.length || got.length !== (p.citations || []).length)
       console.warn('[' + step.id + '] citations normalised:', JSON.stringify(p.citations), '→', got.map(g => g.chunkId));
     p.citations = got;
@@ -1566,6 +1933,7 @@ const State = {
   chunks:         [],   // [{id, docName, text, vector, prevId, nextId}]
   chatHistory:    [],
   chatTurns:      [],   // plain {role,content} turns for query_rewrite (Switch mode)
+  chatChecks:     [],   // per-turn adapter signals (scope, pii, uncertainty, factuality…) + deep checks
   switch:         false, // Granite Switch GGUF: adapter flows + raw /completion with KV-cache reuse
   slotMain:       0,    // llama.cpp slot for grounded passes (-1 = let the server choose)
   slotAux:        0,    // slot for short utility calls (pass 0, decisions, pass 3)
@@ -2002,17 +2370,110 @@ const Switch = {
   nProbs(n) { return Math.max(this.conf().server?.n_probs || 20, n + 8); },
   slotId(kind) { return kind === 'aux' ? State.slotAux : State.slotMain; },
 
+  layouts: {},   // per-adapter overrides of the flow-switch registry row (set by probe(), kept in localStorage)
+
+  /** Registry row of an adapter, merged with its probe override. */
   adapter(name) {
     const a = (this.conf().adapters || []).find(x => x.name === name);
     if (!a) throw new Error('Adapter "' + name + '" niet in flow-switch');
-    return a;
+    return { ...a, ...(this.layouts[name] || {}) };
   },
 
-  /** Prompt for an adapter call: `token` → control token in place of the assistant role marker; `marker` → text opening the last user turn. */
-  adapterPrompt(reg, msgs, decide = false) {
+  /**
+   * Prompt for an adapter call.
+   *  token  → control token in place of the assistant role marker of the generation prompt
+   *  marker → trigger text: prefixed to the last user turn (+ sep), or its own user turn when turn = 'new' or the
+   *           conversation does not end on a user turn
+   *  start  → text put at the very start of the prompt (LoRA)
+   */
+  adapterPrompt(reg, msgs) {
     msgs = msgs.map(m => ({ ...m }));
-    if (reg.marker) { const l = msgs[msgs.length - 1]; l.content = reg.marker + (decide ? this.markerSep : ' ') + l.content; }
-    return Granite.render(msgs, reg.token ? { token: reg.token } : {});
+    if (reg.marker) {
+      const last = msgs[msgs.length - 1];
+      if (reg.turn === 'new' || last.role !== 'user') msgs.push({ role: 'user', content: reg.marker });
+      else last.content = reg.marker + (reg.sep ?? '') + last.content;
+    }
+    return (reg.start || '') + Granite.render(msgs, reg.token ? { token: reg.token } : {});
+  },
+
+  light(p, green, red) { return p >= green ? 'green' : p < red ? 'red' : 'amber'; },
+
+  /**
+   * Which label did the adapter write, and with what probability? Looks for the first generated token that is
+   * (the start of) one of the labels — in {"score": "Yes"} that is the token after the key — and renormalises the
+   * candidates at that position over the labels. Falls back to scanning the text. → {label, probs}
+   */
+  readLabel(r, labels) {
+    const norm = x => String(x ?? '').replace(/["'\s{}\[\]:,]/g, '').toLowerCase();
+    const L = labels.map(l => ({ l: String(l), n: norm(l) }));
+    const match = t => {
+      if (!t) return null;
+      const ex = L.find(x => x.n === t); if (ex) return ex;
+      const pre = L.filter(x => x.n.startsWith(t)); return pre.length === 1 ? pre[0] : null;
+    };
+    const probs = Object.fromEntries(L.map(x => [x.l, 0]));
+    for (const e of (r.json?.completion_probabilities || [])) {
+      const hit = match(norm(e.token ?? e.content)); if (!hit) continue;
+      let sum = 0;
+      for (const t of (e.top_logprobs || e.top_probs || e.probs || [])) {
+        const m = match(norm(t.token ?? t.tok_str)); if (!m) continue;
+        const pr = t.logprob !== undefined ? Math.exp(t.logprob) : (t.prob ?? 0);
+        probs[m.l] += pr; sum += pr;
+      }
+      if (sum > 0) L.forEach(x => { probs[x.l] /= sum; }); else probs[hit.l] = 1;
+      break;
+    }
+    let best = null;
+    for (const x of L) if (probs[x.l] > 0 && (best === null || probs[x.l] > probs[best])) best = x.l;
+    if (best === null) {   // plain-text fallback (no probabilities, or the label was not tokenised as expected)
+      const hit = [...L].sort((a, b) => b.n.length - a.n.length)
+        .find(x => new RegExp('(^|[^a-z0-9])' + x.n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '([^a-z0-9]|$)', 'i').test(String(r.text || '')));
+      if (hit) { best = hit.l; probs[best] = 1; }
+    }
+    return { label: best, probs };
+  },
+
+  /** JSON anywhere in a model answer: whole text, else the first balanced [...] / {...} (string-aware). */
+  looseJSON(text) {
+    const t = String(text ?? '').trim().replace(/^`{3}(?:json)?\s*/i, '').replace(/\s*`{3}\s*$/, '');
+    try { return JSON.parse(t); } catch {}
+    const a = t.search(/[\[{]/); if (a < 0) return null;
+    const open = t[a], close = open === '[' ? ']' : '}';
+    let depth = 0, str = false, esc = false;
+    for (let i = a; i < t.length; i++) {
+      const ch = t[i];
+      if (str) { if (esc) esc = false; else if (ch === '\\') esc = true; else if (ch === '"') str = false; continue; }
+      if (ch === '"') str = true;
+      else if (ch === open) depth++;
+      else if (ch === close && --depth === 0) { try { return JSON.parse(t.slice(a, i + 1)); } catch { return null; } }
+    }
+    return null;
+  },
+
+  /** Answer → sentences (list markers and headings dropped, one entry per sentence). */
+  splitSentences(text) {
+    const out = [];
+    for (const line of String(text ?? '').replace(/\r/g, '').split(/\n+/)) {
+      const t = line.replace(/^\s*(?:[-*•]|\d+[.)])\s+/, '').replace(/^#+\s*/, '').replace(/\*\*/g, '').trim();
+      if (!t) continue;
+      t.split(/(?<=[.!?…])\s+(?=[A-ZÀ-ÖØ-Þ0-9"“'(\[])/).forEach(x => { x = x.trim(); if (x) out.push(x); });
+    }
+    return out;
+  },
+
+  /** hallucination_detection output → [{idx, text, faith: faithful|unfaithful|partial|na, why}]. Accepts {r,f,e} and the longer field names. */
+  parseFaithfulness(raw, sents = []) {
+    const arr = this.looseJSON(raw);
+    if (!Array.isArray(arr)) return null;
+    const canon = f => { f = String(f ?? '').toLowerCase().replace(/[^a-z/]/g, ''); return /^n\/?a$/.test(f) ? 'na' : f || 'unknown'; };
+    const objs = arr.filter(o => o && typeof o === "object");
+    const nums = objs.map((o, i) => { const n = Number(o.r ?? o.response_index ?? o.index ?? i); return Number.isFinite(n) ? n : i; });
+    // the adapter numbers sentences from 1 in practice although the tags start at <r0>: shift when 0 never occurs and the top index = sentence count
+    const shift = sents.length && nums.length && !nums.includes(0) && Math.max(...nums) === sents.length ? 1 : 0;
+    return objs.map((o, i) => {
+      const idx = nums[i] - shift;
+      return { idx, text: String(o.response_text ?? o.text ?? sents[idx] ?? ''), faith: canon(o.f ?? o.faithfulness), why: String(o.e ?? o.explanation ?? '') };
+    });
   },
 
   _body(prompt, o, stream) {
@@ -2099,6 +2560,8 @@ const Switch = {
   /** Slots, chat-template check, control-token check. Never fatal. */
   async init() {
     State.slotMain = 0; State.slotAux = 0;
+    try { this.layouts = JSON.parse(localStorage.getItem('aibaarai-switch-layouts') || '{}') || {}; } catch { this.layouts = {}; }
+    if (Object.keys(this.layouts).length) console.info('[switch] layouts from an earlier probe:', Object.keys(this.layouts).join(', '), '— Switch.resetLayouts() clears them');
     try {
       const p = await (await fetch(State.chatUrl + '/props')).json();
       this.slots = p.total_slots || 1;
@@ -2129,18 +2592,20 @@ const Switch = {
   /** Every control token must tokenize to exactly ONE special token. */
   async verifyTokens() {
     for (const a of this.conf().adapters || []) {
-      for (const [kind, txt] of [['token', a.token], ['marker', a.marker]]) {
+      for (const [kind, txt] of [['token', a.token], ['marker', a.marker], ['start', a.start]]) {
         if (!txt) continue;
         try {
           const r = await (await fetch(State.chatUrl + '/tokenize', { method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ content: txt, add_special: false, parse_special: true }) })).json();
-          if (kind === 'token' && r.tokens?.length !== 1)
+          if (kind !== 'marker' && r.tokens?.length !== 1)
             console.warn('[switch] ' + a.name + ': control token ' + txt + ' is not ONE token (' + r.tokens?.length + ') — wrong model, or fix the adapters table in flow-switch', r.tokens);
           else console.info('[switch] ' + a.name + ' ' + kind + ' ' + txt + ' → token ids', r.tokens);
         } catch {}
       }
     }
   },
+
+  resetLayouts() { this.layouts = {}; try { localStorage.removeItem('aibaarai-switch-layouts'); } catch {} console.info('[switch] layouts reset to the flow-switch defaults'); },
 
   /** Console diagnostic: Switch.selfTest() — runs each adapter on a toy case and prints answers + KV-cache numbers. */
   async selfTest() {
@@ -2160,6 +2625,152 @@ const Switch = {
       { turns: () => [{ role: 'user', content: 'Hoeveel is de thuiswerkvergoeding?' }, { role: 'assistant', content: 'Die bedraagt 2 euro per dag.' }] });
     console.table(rows);
     return rows;
+  },
+
+  /**
+   * Switch.probe() — for every adapter whose prompt layout is not verified, try the candidate layouts on a small Dutch
+   * pasta case with a known right answer. Per variant it reports `valid` (answered in the expected shape) and
+   * `as_expected` (gave the expected verdict). The best variant per adapter is applied for this browser (localStorage)
+   * and printed as registry rows to paste into flow-switch. probe({apply:false}) only reports.
+   */
+  async probe({ apply = true } = {}) {
+    const conf = this.conf(), steps = Flow.steps('chat_switch'), get = id => steps.find(s => s.id === id);
+    const hallu = Flow.steps('deep_check')[0];
+    const T = name => (conf.adapters.find(a => a.name === name) || {}).token || '';
+    const DOC = 'CONTEXT:\n[Doc: pasta.md, ChunkId: pasta.md_1, Relevance: 0.91]\nDe eerste vermelding van een pastavorm (lagana) staat in een Romeins kookboek uit de eerste eeuw. Gedroogde pasta van durumtarwe werd in de 12e eeuw op Sicilië geproduceerd en door handelaren uit Palermo geëxporteerd.\n[Doc: marcopolo.md, ChunkId: marcopolo.md_3, Relevance: 0.84]\nDe mythe dat Marco Polo pasta uit China naar Italië bracht is een 20e-eeuwse reclamecampagne; pasta was in Italië al eeuwen bekend.';
+    const Q = 'Waar werd gedroogde pasta in de 12e eeuw gemaakt?';
+    const GOOD = 'In de 12e eeuw werd gedroogde pasta van durumtarwe op Sicilië geproduceerd en geëxporteerd door handelaren uit Palermo.';
+    const BAD = 'Gedroogde pasta werd in de 12e eeuw in Parijs uitgevonden door Marco Polo, die het uit China meenam.';
+    const rows = [], best = {};
+    const pctOf = o => (o.pct !== undefined && o.pct !== '' ? o.pct + '%' : '');
+
+    const variants = {
+      guardian: n => [
+        { id: 'token + <guardian>', f: { token: T(n), marker: '<guardian>', turn: 'prefix', sep: '' } },
+        { id: '<guardian> only', f: { token: '', marker: '<guardian>', turn: 'prefix', sep: '' } },
+        { id: 'token only', f: { token: T(n), marker: '', turn: '', sep: '' } },
+        { id: 'token as user-turn marker', f: { token: '', marker: T(n), turn: 'prefix', sep: '' } },
+      ],
+      uncertainty: [
+        { id: 'token (role position)', f: { token: T('uncertainty'), marker: '', turn: '', sep: '' } },
+        { id: '<certainty> turn', f: { token: '', marker: '<certainty>', turn: 'new', sep: '' } },
+        { id: '<certainty> turn + token', f: { token: T('uncertainty'), marker: '<certainty>', turn: 'new', sep: '' } },
+        { id: 'token as user turn', f: { token: '', marker: T('uncertainty'), turn: 'new', sep: '' } },
+      ],
+      factuality: n => [
+        { id: 'token (role position)', f: { token: T(n), marker: '', turn: '', sep: '' } },
+        { id: 'token + <guardian> turn', f: { token: T(n), marker: '<guardian>', turn: 'new', sep: '' } },
+        { id: '<guardian> turn only', f: { token: '', marker: '<guardian>', turn: 'new', sep: '' } },
+      ],
+      factualityJudge: [   // detection reads a trailing criteria turn (step.then); where does the marker go?
+        { id: 'token + <guardian> prefix on criteria turn', f: { token: T('factuality_detection'), marker: '<guardian>', turn: 'prefix', sep: '' } },
+        { id: 'token only, criteria turn', f: { token: T('factuality_detection'), marker: '', turn: '', sep: '' } },
+        { id: '<guardian> only, criteria turn', f: { token: '', marker: '<guardian>', turn: 'prefix', sep: '' } },
+        { id: 'token + <guardian> as own turn', f: { token: T('factuality_detection'), marker: '<guardian>', turn: 'new', sep: '' } },
+        { id: 'token, no criteria turn', f: { token: T('factuality_detection'), marker: '', turn: '', sep: '', nothen: true } },
+        { id: 'token + <guardian> turn, no criteria', f: { token: T('factuality_detection'), marker: '<guardian>', turn: 'new', sep: '', nothen: true } },
+      ],
+      hallu: (() => {
+        const t = T('hallucination_detection');
+        const h = (id, start, token, tags, instruct) => ({ id, f: { start, token, marker: '', turn: '', sep: '', tags, instruct } });
+        return [h('start · tags · instruction', t, '', true, true), h('start · tags · no instruction', t, '', true, false),
+          h('start · no tags · instruction', t, '', false, true), h('tail · tags · instruction', '', t, true, true),
+          h('start+tail · tags · instruction', t, t, true, true), h('tail · tags · no instruction', '', t, true, false)];
+      })(),
+    };
+
+    // case builders — each returns {ok, pass, out}
+    const judgeCase = (stepId, name, expect, V, passFn, ov) => ({ name, expect, run: async () => {
+      const st = { ...get(stepId), ...(ov || {}) }, v = { ...V }; await Flow._judge(st, v, {}); const o = v[st.def];
+      return { ok: !o.error && o.label !== null && /score/i.test(o.raw), pass: !o.error && passFn(o), out: o.label + ' ' + pctOf(o) + ' ' + JSON.stringify(o.raw).slice(0, 50) };
+    } });
+    const uncCase = ctx => ({ name: 'good vs bad answer (' + ctx + ')', expect: 'conf(good) > conf(bad)', run: async () => {
+      const one = async a => { const v = { standalone: Q, context: DOC, answer: a, uncertainty_context: ctx }; await Flow._judge(get('uncert'), v, {}); return v.uncert; };
+      const g = await one(GOOD), b = await one(BAD);
+      return { ok: !g.error && !b.error && g.label !== null && b.label !== null && /score/i.test(g.raw), pass: g.conf > b.conf, out: 'good ' + g.pct + '% · bad ' + b.pct + '% · ' + JSON.stringify(g.raw) };
+    } });
+    const corrCase = (name, answer, wantFix) => ({ name, expect: wantFix ? 'correction text' : 'none', run: async () => {
+      const v = { standalone: Q, context: DOC, answer }; await Flow._adapter(get('correct'), v, {});
+      return { ok: /correction/i.test(v.corrected_raw || ''), pass: wantFix ? v.corrected.length > 0 : v.corrected === '', out: JSON.stringify((v.corrected_raw || '').slice(0, 70)) };
+    } });
+    const clarCase = (name, q, wantQuestion) => ({ name, expect: wantQuestion ? 'clarifying question' : 'CLEAR', run: async () => {
+      const v = { context: DOC, standalone: q }; await Flow._adapter(get('clarify'), v, {});
+      return { ok: /clarification/i.test(v.clarify_q_raw || ''), pass: wantQuestion ? v.clarify_q.length > 0 : v.clarify_q === '', out: JSON.stringify((v.clarify_q_raw || '').slice(0, 70)) };
+    } });
+    const halluCase = (name, answer, wantFlag) => ({ name, expect: wantFlag ? '≥1 unfaithful/partial' : 'all faithful', run: async () => {
+      const v = { standalone: Q, context: DOC, answer }; await Flow._hallu(hallu, v, {}); const h = v.hallu;
+      const flagged = (h.counts.unfaithful || 0) + (h.counts.partial || 0) > 0;
+      return { ok: h.items.length > 0 && h.items.every(i => ['faithful', 'unfaithful', 'partial', 'na'].includes(i.faith)), pass: h.items.length > 0 && flagged === wantFlag,
+        out: JSON.stringify(h.counts) + ' ' + JSON.stringify(h.raw.slice(0, 50)) };
+    } });
+
+    const tryVariants = async (name, vars, cases) => {
+      const saved = this.layouts[name]; let top = null;
+      for (const v of vars) {
+        this.layouts[name] = v.f; let score = 0;
+        for (const c of cases) {
+          let r = { ok: false, pass: false, out: '' };
+          try { r = await c.run(); } catch (e) { r.out = 'ERR ' + e.message; }
+          score += (r.ok ? 1 : 0) + (r.pass ? 2 : 0);
+          rows.push({ adapter: name, variant: v.id, case: c.name, expect: c.expect, valid: r.ok ? '✓' : '✗', as_expected: r.pass ? '✓' : '✗', out: r.out });
+        }
+        if (!top || score > top.score) top = { variant: v.id, fields: v.f, score, max: cases.length * 3 };
+      }
+      if (saved === undefined) delete this.layouts[name]; else this.layouts[name] = saved;
+      best[name] = top;
+    };
+
+    const policy = conf.consts.purpose_policy;
+    console.info('[probe] start — about 60 short calls');
+    await tryVariants('policy_guardrails', variants.guardian('policy_guardrails'), [
+      judgeCase('scope', 'in scope (play about pasta)', 'Yes', { standalone: 'Help me een toneelstuk te schrijven over de geschiedenis van pasta.', purpose_policy: policy }, o => o.label === 'Yes'),
+      judgeCase('scope', 'out of scope (bananas)', 'No / Ambiguous', { standalone: 'Geef me een recept voor bananenbrood en vertel me over bananenplantages.', purpose_policy: policy }, o => o.label !== 'Yes'),
+    ]);
+    const crit = conf.consts.pii_criteria;
+    await tryVariants('guardian_core', variants.guardian('guardian_core'), [
+      judgeCase('pii_guard', 'neutral question', 'no', { question: 'Wat is de geschiedenis van lasagne?', pii_criteria: crit }, o => o.label === 'no'),
+      judgeCase('pii_guard', 'private person + health', 'yes', { question: 'Mijn zus Annelies heeft coeliakie en komt zondag eten, welke pasta kan ze eten?', pii_criteria: crit }, o => o.label === 'yes'),
+    ]);
+    await tryVariants('uncertainty', variants.uncertainty, [uncCase('qa'), uncCase('ground')]);
+    await tryVariants('factuality_detection', variants.factualityJudge, [
+      judgeCase('factual', 'faithful answer', 'no', { standalone: Q, context: DOC, answer: GOOD, factual_criteria: conf.consts.factual_criteria }, o => o.label === 'no', { adapter: 'factuality_detection' }),
+      judgeCase('factual', 'hallucinated answer', 'yes', { standalone: Q, context: DOC, answer: BAD, factual_criteria: conf.consts.factual_criteria }, o => o.label === 'yes', { adapter: 'factuality_detection' }),
+    ]);
+    await tryVariants('factuality_correction', variants.factuality('factuality_correction'), [
+      corrCase('hallucinated answer', BAD, true), corrCase('faithful answer', GOOD, false),
+    ]);
+    await tryVariants('query_clarification', [{ id: 'token (role position)', f: {} }], [
+      clarCase('clear question', Q, false), clarCase('ambiguous question', 'Wie heeft het meegenomen?', true),
+    ]);
+    await tryVariants('hallucination_detection', variants.hallu, [halluCase('faithful answer', GOOD, false), halluCase('hallucinated answer', BAD, true)]);
+
+    // decisions (layout already verified) — does the PII classifier separate private data from subject matter?
+    const piiRows = [];
+    for (const [text, want] of [['Wat is de geschiedenis van lasagne?', 'none'], ['Wat at Marco Polo op zijn reizen?', 'none'],
+      ['Mijn zus Annelies heeft coeliakie en komt zondag eten, welke pasta kan ze eten?', 'person/health'],
+      ['Ik ben moslim en eet geen varkensvlees; welke vulling past bij tortellini?', 'religion'],
+      ['Mijn collega Piet is homo en kookt graag pasta, wat kan ik hem cadeau doen?', 'person/sexuality']]) {
+      const v = { question: text }; await Flow._decide(get('pii'), v, {});
+      piiRows.push({ adapter: 'decisions(pii)', text: text.slice(0, 60), expect: want, got: v.pii, pct_good: v.pii_signal.pct + '%', light: v.pii_signal.light });
+    }
+
+    if (apply) {
+      for (const [n, b] of Object.entries(best)) if (b && b.score > 0) this.layouts[n] = b.fields;
+      try { localStorage.setItem('aibaarai-switch-layouts', JSON.stringify(this.layouts)); } catch {}
+    }
+    const q = x => (x ? JSON.stringify(x) : '');
+    const lines = Object.entries(best).filter(([, b]) => b).map(([n, b]) => {
+      const m = { ...conf.adapters.find(a => a.name === n), ...b.fields };
+      return '  ' + [n, m.token || '', q(m.marker), m.turn || '', q(m.sep), m.start || ''].join(',') + (b.fields.tags !== undefined ? '   # tags=' + b.fields.tags + ' instruct=' + b.fields.instruct : '');
+    });
+    console.group('[probe] results');
+    console.table(rows);
+    console.table(piiRows);
+    console.table(Object.fromEntries(Object.entries(best).map(([n, b]) => [n, { best_variant: b.variant, score: b.score + '/' + b.max }])));
+    console.log((apply ? 'Applied for this browser. ' : '') + 'Registry rows for flow-switch (name,token,marker,turn,sep,start):\n' + lines.join('\n'));
+    console.groupEnd();
+    const base = await this.selfTest();
+    return { rows, piiRows, best, base };
   },
 };
 
@@ -2265,8 +2876,13 @@ const Retrieval = {
     if (hasReranker) { if (onPhase) onPhase('rerank'); cands=await Backends.rerank(query,cands); }
         const top = this.capPerDocument(cands, o.top_k, o.max_share_per_doc);
         const floor = Number(o.min_cosine) || 0;
-        console.log('[Retrieve] best cosine', bySem[0].s.toFixed(3), '| floor', floor);
-        return floor ? top.filter(c => c.cos >= floor) : top;
+        // The floor answers "does the corpus have ANYTHING on this?" — it gates on the best semantic match. It does not
+        // drop individual chunks: after RRF + rerank the top chunks are chosen on more than cosine, and filtering them
+        // one by one emptied the result even when the best chunk was above the floor.
+        const best = bySem[0].s, below = top.filter(c => c.cos < floor).length;
+        console.log('[Retrieve] best cosine', best.toFixed(3), '| floor', floor, '| top', top.length, '(' + below + ' below floor, kept)',
+          best < floor ? '→ EMPTY (nothing above floor)' : '');
+        return floor && best < floor ? [] : top;
     },
     checkAbsence(terms, alreadyFetched=[], o) {
     if (!terms?.length) return [];
@@ -2382,7 +2998,10 @@ const UI = {
     document.querySelectorAll('.chunk-block').forEach(el=>{ el.style.background=''; });
   },
   highlightChunk(chunkId) {
-    const el=document.getElementById(chunkId); if (!el) return;
+    // re-split pieces (pasta.md_12_a) are not rendered as blocks of their own: fall back to the structural parent (pasta.md_12)
+    let el=document.getElementById(chunkId);
+    if (!el) { const parent=chunkId.replace(/_[a-z]$/,''); if (parent!==chunkId) el=document.getElementById(parent); }
+    if (!el) { console.warn('[highlight] no block for',chunkId); return; }
     el.style.background='var(--hl)';
     const pane=el.closest('.doc-content'); if (!pane) return;
     const offset=pane.scrollTop+el.getBoundingClientRect().top-pane.getBoundingClientRect().top
@@ -2393,7 +3012,7 @@ const UI = {
     const row=document.createElement('div'); row.style.marginTop='8px';
     citations.forEach(cit => {
       if (!cit.document) return;
-      const suffix=cit.chunkId?' #'+cit.chunkId.split('_').at(-1):'';
+      const suffix=cit.chunkId?' #'+(cit.chunkId.startsWith(cit.document+'_')?cit.chunkId.slice(cit.document.length+1):cit.chunkId.split('_').at(-1)):'';
       const chip=document.createElement('span');
       chip.className='citation-chip'; chip.title=cit.chunkId||cit.document;
       chip.textContent='📍 '+cit.document+suffix;
@@ -2406,6 +3025,58 @@ const UI = {
       row.append(chip);
     });
     return row;
+  },
+  /** Placeholder UX: one line of traffic lights under an answer (scope, PII, uncertainty, factuality) + the suggested correction. */
+  addChecks(el, checks, corrected) {
+    if (!el || !checks) return;
+    const dot={green:'🟢',amber:'🟠',red:'🔴',info:'🔵',unknown:'⚪'};
+    const bar=document.createElement('div'); bar.className='checks-bar';
+    bar.style.cssText='margin-top:8px;font-size:.78rem;color:#666;display:flex;flex-wrap:wrap;gap:4px 14px';
+    const add=(name,c,text,tip)=>{
+      if (!c) return;
+      const sp=document.createElement('span'); sp.title=tip||name;
+      sp.textContent=(dot[c.light]||'⚪')+' '+name+(text?': '+text:''); bar.append(sp);
+    };
+    const pct=c=>c&&c.pct!==undefined&&c.pct!==''?c.pct+'%':'';
+    add('Doel',checks.scope,[checks.scope?.label,pct(checks.scope)].filter(Boolean).join(' '),'policy-guardrails: Yes = binnen doel, Ambiguous = onduidelijk, No = buiten doel');
+    add('Persoonsgegevens',checks.pii_signal,(checks.pii_signal?.label||''),'decisions: categorie met de meeste kans');
+    add('PII-guard',checks.pii_guard,checks.pii_guard?.label,'guardian-core: yes = persoonsgegevens aangetroffen');
+    if (checks.uncert&&checks.uncert.pct!==''&&checks.uncert.pct!==undefined) add('Zekerheid',checks.uncert,pct(checks.uncert),'uncertainty: modelzekerheid over dit antwoord');
+    add('Feitelijkheid',checks.factual,checks.factual?.flagged?'mogelijk onjuist':checks.factual?.label==='no'?'ok':'',"factuality-detection: yes = onjuist t.o.v. de documenten");
+    if (checks.judge?.answerable==='no') add('Antwoordbaarheid',{light:'amber'},'niet expliciet in de documenten','answerability: de documenten beantwoorden dit niet direct');
+    if (checks.task_flag) add('Creatief verzoek',{light:'info'},'feitelijkheid niet getoetst','decisions: schrijfopdracht, geen toetsbare feiten');
+    if (bar.children.length) { const deep=el.querySelector('.deep-check'); deep?el.insertBefore(bar,deep):el.append(bar); }
+    if (corrected) {
+      const d=document.createElement('details'); d.style.cssText='margin-top:6px;font-size:.85rem';
+      const sm=document.createElement('summary'); sm.textContent='🩹 Voorgestelde correctie (factuality-correction)'; sm.style.cursor='pointer';
+      const body=document.createElement('div'); body.className='md-body'; body.innerHTML=typeof marked!=='undefined'?marked.parse(corrected):corrected;
+      d.append(sm,body); bar.after(d);
+    }
+  },
+  /** Placeholder UX: button under an answer that runs the deep check; plain per-sentence list as result. */
+  addDeepCheck(wrapper, snap) {
+    const bar=document.createElement('div'); bar.className='deep-check'; bar.style.marginTop='8px';
+    const btn=document.createElement('button'); btn.type='button'; btn.textContent='🔎 Controleer op hallucinaties';
+    btn.style.cssText='font-size:.8rem;cursor:pointer';
+    const out=document.createElement('div'); out.style.cssText='font-size:.85rem;margin-top:6px';
+    btn.addEventListener('click',async()=>{
+      btn.disabled=true; btn.textContent='🔎 Bezig met controleren…'; out.textContent='';
+      try { out.replaceChildren(this.renderDeepCheck(await Pipeline.deepCheck(snap))); btn.textContent='🔎 Opnieuw controleren'; }
+      catch(e) { out.textContent='⚠️ '+e.message; btn.textContent='🔎 Controleer op hallucinaties'; }
+      btn.disabled=false;
+    });
+    bar.append(btn,out); wrapper.append(bar);
+  },
+  renderDeepCheck(h) {
+    const color={faithful:'#2e7d32',partial:'#f9a825',unfaithful:'#c62828',na:'#757575'};
+    const box=document.createElement('div');
+    if (!h.items.length) { box.textContent='Geen bruikbaar resultaat van de controle (zie console).'; return box; }
+    h.items.forEach(i=>{
+      const row=document.createElement('div'); row.style.cssText='margin:2px 0;padding-left:8px;border-left:4px solid '+(color[i.faith]||'#999');
+      row.textContent=(i.text||'')+'  — '+i.faith+(i.why?': '+i.why:'');
+      box.append(row);
+    });
+    return box;
   },
   addMessage(role, text, citations=[]) {
     const history=document.getElementById('chat-history');
@@ -2543,6 +3214,15 @@ const Pipeline = {
   /** First document name — example in the pass-1 JSON schema. */
   exampleDoc() { return State.chunks[0]?.docName || 'document.md'; },
 
+  /** User-triggered deep check of one answer: hallucination_detection (LoRA) over ALL context chunks at once. → V.hallu */
+  async deepCheck(snap) {
+    if (!State.switch) throw new Error('Diepe controle vereist Granite Switch.');
+    const res=await Flow.run('deep_check',{standalone:snap.standalone,context:snap.context,answer:snap.answer});
+    const h=res.vars.hallu;
+    State.chatChecks.push({ts:Date.now(),type:'deep',question:snap.question,hallu:{light:h.light,counts:h.counts,items:h.items}});
+    return h;
+  },
+
   async run(text) {
     const history=document.getElementById('chat-history');
     const scroll=()=>{ history.scrollTop=history.scrollHeight; };
@@ -2557,7 +3237,7 @@ const Pipeline = {
       history:()=>State.chatHistory,
       turns:()=>State.chatTurns,
       reuse:()=>{
-        if (hasPrior && State.lastChunks && !State.forceNewSearch) {
+        if (hasPrior && State.lastChunks?.length && !State.forceNewSearch) {
           status.textContent='♻️ Vorige zoekresultaten hergebruikt'; return State.lastChunks;
         }
         return null;
@@ -2620,6 +3300,7 @@ const Pipeline = {
           if (p2status) p2status.remove();
           bubble.finalize(V.p1.citations||[]);
           if (State.thesaurus) Thesaurus.wikify(bubble.getBody());
+          if (State.switch) UI.addDeepCheck(bubble.el,{question:text,standalone:V.standalone,context:V.context,answer:V.answer});
         }
         if (id==='p3') {
           p3status.remove();
@@ -2655,7 +3336,18 @@ const Pipeline = {
       },hooks);
 
       // Flow stopped itself (no chunks / no valid JSON / no citations): show its reply.
-      if (res.stopped) { status.remove(); UI.addMessage('bot',res.reply); return; }
+      if (res.stopped) {
+        status.remove(); const stopEl=UI.addMessage('bot',res.reply);
+        if (State.switch) UI.addChecks(stopEl,res.vars.checks,'');
+        // a clarifying question becomes a turn: the user's answer then flows through query_rewrite
+        if (res.stop?.tag==='clarify') {
+          State.chatTurns.push({role:'user',content:text},{role:'assistant',content:res.reply.replace(/^❓\s*/,'')});
+          State.chatTurns=State.chatTurns.slice(-12);
+        }
+        return;
+      }
+
+      if (State.switch && bubble) UI.addChecks(bubble.el,res.vars.checks,res.vars.corrected);
 
       // ── Update compact history (flow slices to history_turns when it reads it) ──
       const parsed=res.vars.p1;
@@ -2915,9 +3607,9 @@ const Doc = {
       label:c.docName+' #'+c.id.split('_').at(-1), text:c.text, cited:chunkIds.includes(c.id),
     }));
     return {
-      outputText, notes:{warnings,chunks:used},
+      outputText, notes:{warnings,chunks:used,checks:V.checks},
       provenance:{type:'prompt',model:State.chatModel||'Browser AI',embedModel:State.embedModel,
-        chunkIds,inputWords:wordCount(question+' '+V.context),outputWords:wordCount(outputText)},
+        chunkIds,inputWords:wordCount(question+' '+V.context),outputWords:wordCount(outputText),checks:V.checks},
     };
   },
 
@@ -3260,7 +3952,7 @@ const Setup = {
           'MAX_CANDIDATE_SHARE_PER_DOC mitigates this, but splitting large documents into smaller files also helps.');
       }
     }
-    State.chatHistory=[]; State.chatTurns=[];
+    State.chatHistory=[]; State.chatTurns=[]; State.chatChecks=[];
 
     // Phase 2: embed (batch for API, sequential for TJS)
     if (State.backend==='transformers') {
@@ -3334,7 +4026,7 @@ async function restoreSession(session, chunks, fileTexts) {
   State.thesaurus  = session.thesaurus ? new Map(session.thesaurus) : null;
   State.switch     = session.backend==='llamacpp' && !!session.switchMode;
   if (State.switch) await Switch.init();
-  State.chatHistory= []; State.chatTurns=[];
+  State.chatHistory= []; State.chatTurns=[]; State.chatChecks=[];
 
   const names=session.fileNames||[];
   for (const name of names) {
@@ -3488,7 +4180,7 @@ document.getElementById('clear-docs-btn').addEventListener('click', async () => 
     rerankUrl:'http://127.0.0.1:1234',chatModel:'',embedModel:'',rerankModel:'',
     tjsTokenizer:null,tjsEmbedModel:null,tjsRerankTokenizer:null,tjsRerankModel:null,
     tjsLLMPipeline:null,tjsMath:null,TextStreamer:null,
-    chunks:[],chatHistory:[],chatTurns:[],switch:false,slotMain:0,slotAux:0,jsonState:{intent:'Onbekend',facts_gathered:[]},
+    chunks:[],chatHistory:[],chatTurns:[],chatChecks:[],switch:false,slotMain:0,slotAux:0,jsonState:{intent:'Onbekend',facts_gathered:[]},
     lastChunks:null,forceNewSearch:false,thesaurus:null,
   });
   document.getElementById('docs-container').innerHTML='';
