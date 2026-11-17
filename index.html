@@ -3600,15 +3600,15 @@ const Doc = {
   evalSummary(ev,name) {
     const P=x=>Math.round(x*100)+'%';
     const failed=ev.rows.filter(r=>r.score!==null&&!r.pass);
-    let t='Evaluatie'+(name?' van $'+name:'')+': totaal '+P(ev.total)+' (doel '+P(ev.targetAvg)+').';
-    t+=failed.length ? '\nNiet gehaald:\n'+failed.map(r=>'- '+r.description+' — '+P(r.score)+' (doel '+P(r.target)+')'+(r.reason?': '+r.reason:'')).join('\n')
-                     : '\nAlle criteria gehaald.';
+    let t='Evaluation'+(name?' of $'+name:'')+': total '+P(ev.total)+' (target '+P(ev.targetAvg)+').';
+    t+=failed.length ? '\nFailed checks:\n'+failed.map(r=>'- '+r.description+' — '+P(r.score)+' (target '+P(r.target)+')'+(r.reason?': '+r.reason:'')).join('\n')
+                     : '\nAll criteria passed.';
     return t;
   },
   halluSummary(h) {
     const bad=(h.items||[]).filter(i=>i.faith==='unfaithful'||i.faith==='partial');
-    return bad.length ? 'Hallucinatiecontrole: zinnen die niet (volledig) door de bronnen worden gedekt:\n'+bad.map(i=>'- '+i.text+(i.why?' ('+i.why+')':'')).join('\n')
-                      : 'Hallucinatiecontrole: alle zinnen worden door de bronnen gedekt.';
+    return bad.length ? 'Hallucination check: sentences not (fully) supported by the sources:\n'+bad.map(i=>'- '+i.text+(i.why?' ('+i.why+')':'')).join('\n')
+                      : 'Hallucination check: all sentences are supported by the sources.';
   },
 
   /* ── typed evaluation table ───────────────────────────────────────────────────────────────────
