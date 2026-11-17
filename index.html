@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AIbaarAI RAG en document generator v2.2</title>
+  <title>AIbaarAI RAG en document generator v2.3</title>
   <!--
     Required files (next to index.html): marked.min.js
     Optional: transformers.min.js, mermaid.min.js
@@ -297,6 +297,7 @@
           style="font-size:.78rem;padding:.2rem">
       </label>
       <button id="doc-play-all" type="button">▶▶ Alles uitvoeren</button>
+      <label style="font-size:.78rem;white-space:nowrap" title="Voert na elk prompt-blok de hallucination-detection LoRA uit (Granite Switch)"><input type="checkbox" id="doc-auto-hallu"> 🔎 + hallucinatiecontrole</label>
       <button id="doc-stop"     type="button" disabled style="background:#888">⏹ Stop</button>
       <button id="doc-download" type="button" style="background:#555">⬇ Download .md</button>
       <span id="doc-status"></span>
@@ -1133,6 +1134,7 @@ steps[16]:
     convo: ground
     slot: main
     mode: stream
+    max_tokens: 3000
     temperature: 0.3
     def: findings
     then: |
@@ -1162,11 +1164,73 @@ steps[1]:
     convo: ground
     answer: answer
     slot: main
-    max_tokens: 900
+    max_tokens: 2500
     on_error: fallback
     def: hallu
     then: |
       Split the last assistant response into individual sentences. For each sentence, identify whether it is faithful to the provided documents. Output a JSON array with one object per sentence: {"r": <sentence number>, "f": "faithful" | "unfaithful" | "partial" | "NA", "e": "<short explanation>"}.
+</script>
+
+<script type="text/plain" id="flow-doc_eval_ref">
+flow: doc_eval_ref
+note: Retrieval for ONE eval row with a `rag` cell: the cell text is the retrieval query. Result is V.ref_context (empty when nothing is found). The scoring itself is done by the Doc engine.
+models[3]{role,used_by}:
+  chat,p0
+  embed,retrieve
+  rerank,retrieve
+inputs[3]: row_query,thes_terms,example_doc
+steps[7]:
+  - id: question
+    kind: set
+    value: ${row_query}
+    def: question
+  - use: chat.thes_hint
+  - use: chat.p0
+  - use: chat.terms
+  - use: chat.retrieve
+    query: ${row_query}
+    reuse: never
+    min_cosine: 0
+    on_empty: continue
+  - use: chat.ctx
+  - id: ref_context
+    kind: set
+    from: context
+    wrap: "\n\nREFERENCE CONTEXT:\n%s"
+    def: ref_context
+</script>
+
+<script type="text/plain" id="flow-doc_eval_ref_switch">
+flow: doc_eval_ref_switch
+note: Same as doc_eval_ref, with the Switch pass 0 (terms only).
+models[3]{role,used_by}:
+  chat,p0
+  embed,retrieve
+  rerank,retrieve
+inputs[3]: row_query,thes_terms,example_doc
+steps[8]:
+  - id: question
+    kind: set
+    value: ${row_query}
+    def: question
+  - use: chat.thes_hint
+  - id: standalone
+    kind: set
+    from: question
+    def: standalone
+  - use: chat_switch.p0
+  - use: chat.terms
+  - use: chat_switch.retrieve
+    query: ${row_query}
+    reuse: never
+    min_cosine: 0
+    on_empty: continue
+  - use: chat.ctx
+  - id: ref_context
+    kind: set
+    from: context
+    wrap: "\n\nREFERENCE CONTEXT:\n%s"
+    def: ref_context
 </script>
 
 <script type="text/plain" id="flow-doc_eval_switch">
@@ -1636,6 +1700,7 @@ const Flow = {
         let acc = '';
         const ret = await Switch.stream(prompt, { ...o, temperature: step.temperature ?? 0.3, n_predict: step.max_tokens || 1024 },
           t => { acc += t; if (hooks.chunk) hooks.chunk(step.id, t, acc, V); });
+        if (Switch.last?.limit) { V.truncated = step.id; console.warn('[' + step.id + '] afgekapt: max tokens bereikt'); }
         return acc || ret || '';
       }
       return (await Switch.complete(prompt, { ...o, temperature: step.temperature ?? 0, n_predict: step.max_tokens || 400 })).text;
@@ -1643,7 +1708,9 @@ const Flow = {
     const msgs = this._msgs(step, V, hooks);
     if (step.mode === 'stream') {
       let acc = '';
+      State.lastFinish = '';
       const ret = await Backends.inferStream(msgs, t => { acc += t; if (hooks.chunk) hooks.chunk(step.id, t, acc, V); });
+      if (State.lastFinish === 'length') { V.truncated = step.id; console.warn('[' + step.id + '] afgekapt: max tokens bereikt'); }
       return acc || ret || '';
     }
     const extra = State.switch && step.slot ? { id_slot: Switch.slotId(step.slot) } : undefined;
@@ -1946,6 +2013,9 @@ const State = {
   docRunning:        false,
   docStopRequested:  false,
   docResults:        {},   // Map<blockKey, outputText> — populated from localStorage on launch
+  docEvals:          {},   // Map<evalBlockKey, {targetKey,total,targetAvg,pass,rows[]}> — structured eval result, referenced as $name.eval
+  docHallu:          {},   // Map<promptBlockKey, {light,counts,items[]}> — per-block hallucination check
+  docSnaps:          {},   // Map<promptBlockKey, {question,context}> — in memory only: the evidence of the last run
   docNotes:          {},   // Map<blockKey, {warnings:[], chunks:[{label,text,cited}]}> — shown under the block output, not part of $n
   docProvenance:     [],   // [{type, model, embedModel, chunkIds, inputWords, outputWords, stars, ts}]
 };
@@ -2320,7 +2390,7 @@ const Backends = {
         // the streaming + higher-penalty combination is the suspect.
         // temperature aligned with the working non-streaming passes.
         body:JSON.stringify({model:State.chatModel,messages,
-          temperature:0.3,max_tokens:1024,stream:true}),
+          temperature:0.3,max_tokens:4096,stream:true}),
       });
       if (!res.ok) { const e2=await res.json().catch(()=>({})); throw new Error(e2.error?.message||`API error ${res.status}`); }
       const reader=res.body.getReader(), decoder=new TextDecoder();
@@ -2334,7 +2404,9 @@ const Backends = {
           const payload=line.slice(6).trim();
           if (payload==='[DONE]') return accumulated;
           try {
-            const delta=JSON.parse(payload).choices?.[0]?.delta?.content;
+            const ch=JSON.parse(payload).choices?.[0];
+            if (ch?.finish_reason) State.lastFinish=ch.finish_reason;
+            const delta=ch?.delta?.content;
             if (delta) { accumulated+=delta; onChunk(delta); }
           } catch {}
         }
@@ -2454,6 +2526,7 @@ const Switch = {
   splitSentences(text) {
     const out = [];
     for (const line of String(text ?? '').replace(/\r/g, '').split(/\n+/)) {
+      if (/^\s*#{1,6}\s/.test(line) || /^\s*(?:[-*_]\s*){3,}$/.test(line)) continue;   // headings / rules carry no claims
       const t = line.replace(/^\s*(?:[-*•]|\d+[.)])\s+/, '').replace(/^#+\s*/, '').replace(/\*\*/g, '').trim();
       if (!t) continue;
       t.split(/(?<=[.!?…])\s+(?=[A-ZÀ-ÖØ-Þ0-9"“'(\[])/).forEach(x => { x = x.trim(); if (x) out.push(x); });
@@ -2499,7 +2572,7 @@ const Switch = {
   _note(label, j, t0) {
     const tm = j.timings || {};
     const rec = { label: label || '', cached: tm.cache_n ?? j.tokens_cached ?? '?', fresh: tm.prompt_n ?? j.tokens_evaluated ?? '?',
-      gen: tm.predicted_n ?? j.tokens_predicted ?? '?', ms: Math.round(performance.now() - t0) };
+      gen: tm.predicted_n ?? j.tokens_predicted ?? '?', ms: Math.round(performance.now() - t0), limit: j.stop_type === 'limit' || j.stopped_limit === true };
     this.last = rec; this.log.push(rec); if (this.log.length > 200) this.log.shift();
     console.log('[switch] ' + rec.label + ': ' + rec.fresh + ' new prompt tokens, ' + rec.cached + ' from KV cache, ' + rec.gen + ' generated, ' + rec.ms + ' ms');
   },
@@ -3491,20 +3564,170 @@ const Doc = {
     const byName=new Map();
     prompts.forEach((x,n)=>{ byName.set(String(n+1),x.b); if (x.b.as) byName.set(x.b.as,x.b); });
     const above=[...prompts].reverse().find(x=>x.i<idx);
-    return text.replace(/\$(?:\{(\w+)\}|(\w+))/g,(m,a,b)=>{
-      const name=a||b;
+    const ATTR=['eval','score','hallu'];
+    return text.replace(/\$(?:\{(\w+)(?:\.(\w+))?\}|(\w+)(?:\.(\w+))?)/g,(m,a1,a2,b1,b2)=>{
+      const name=a1||b1; let attr=a1?a2:b2, tail='';
+      if (attr && !ATTR.includes(attr)) { tail='.'+attr; attr=undefined; }   // "$v1.txt" / "$5.50": only the name is a reference
+      let blk;
       if (name==='prev' && !byName.has('prev')) {
         if (!above) throw new Error('$prev: er staat geen prompt-blok boven dit blok.');
-        return this.blockResult(above.b,name);
-      }
-      const blk=byName.get(name);
-      return blk ? this.blockResult(blk,name) : m;
+        blk=above.b;
+      } else blk=byName.get(name);
+      if (!blk) return m;
+      if (attr) return this.blockAttr(blk,name,attr,blocks)+tail;
+      return this.blockResult(blk,name)+tail;
     });
   },
   blockResult(blk,name) {
     const res=State.docResults[blk.key];
     if (res===undefined) throw new Error('$'+name+' heeft nog geen resultaat — voer dat prompt-blok eerst uit.');
     return res.trim();
+  },
+  /** $name.eval | .score | .hallu — structured results of the evaluation block under a prompt block, or of its hallucination check */
+  blockAttr(blk,name,attr,blocks) {
+    if (attr==='hallu') {
+      const h=State.docHallu[blk.key];
+      if (!h) throw new Error('$'+name+'.hallu heeft nog geen resultaat — voer de hallucinatiecontrole van dat blok eerst uit.');
+      return this.halluSummary(h);
+    }
+    const i=blocks.indexOf(blk); let ev=null;
+    for (let j=i+1;j<blocks.length&&blocks[j].type!=='prompt';j++)
+      if (blocks[j].type==='evaluation'&&State.docEvals[blocks[j].key]) { ev=State.docEvals[blocks[j].key]; break; }
+    if (!ev) throw new Error('$'+name+'.'+attr+' heeft nog geen resultaat — voer het evaluatieblok onder $'+name+' eerst uit.');
+    return attr==='score' ? Math.round(ev.total*100)+'%' : this.evalSummary(ev,name);
+  },
+  /** Text form of a structured eval result for reuse in later prompts: totals, failed checks with reasons and percentages. */
+  evalSummary(ev,name) {
+    const P=x=>Math.round(x*100)+'%';
+    const failed=ev.rows.filter(r=>r.score!==null&&!r.pass);
+    let t='Evaluatie'+(name?' van $'+name:'')+': totaal '+P(ev.total)+' (doel '+P(ev.targetAvg)+').';
+    t+=failed.length ? '\nNiet gehaald:\n'+failed.map(r=>'- '+r.description+' — '+P(r.score)+' (doel '+P(r.target)+')'+(r.reason?': '+r.reason:'')).join('\n')
+                     : '\nAlle criteria gehaald.';
+    return t;
+  },
+  halluSummary(h) {
+    const bad=(h.items||[]).filter(i=>i.faith==='unfaithful'||i.faith==='partial');
+    return bad.length ? 'Hallucinatiecontrole: zinnen die niet (volledig) door de bronnen worden gedekt:\n'+bad.map(i=>'- '+i.text+(i.why?' ('+i.why+')':'')).join('\n')
+                      : 'Hallucinatiecontrole: alle zinnen worden door de bronnen gedekt.';
+  },
+
+  /* ── typed evaluation table ───────────────────────────────────────────────────────────────────
+   * | type | description | 1 | 2 | 3 | 4 | 5 | rag | target | weight |
+   * Judge/Scale: levels worse→better · Yes/no: 1 = pass case, 2 = fail case · Choice: ✓ marks the passing options.
+   * Every row becomes 0–100%: Judge/Scale expected level normalised, Yes/no P(pass), Choice P(✓ options). */
+  EVAL_TYPES:{judge:'judge',beoordeling:'judge',llmjudge:'judge','yes/no':'yesno',yesno:'yesno','ja/nee':'yesno',jano:'yesno',noul:'yesno',boolean:'yesno',
+              scale:'scale',schaal:'scale',score:'scale',ordinal:'scale',choice:'choice',keuze:'choice'},
+  evalType(c) { return this.EVAL_TYPES[String(c||'').toLowerCase().replace(/[*_`\s]/g,'')]||null; },
+  parseEvalTable(content) {
+    const pct=c=>{ c=String(c||'').trim(); if (!c) return null; const n=parseFloat(c.replace(',','.')); if (!isFinite(n)) return null; return (/%/.test(c)||n>1)?n/100:n; };
+    const rows=[];
+    for (const line of content.split('\n')) {
+      const t=line.trim();
+      if (!t.startsWith('|')||/^\|[\s:|-]+\|?\s*$/.test(t)) continue;
+      const cells=t.replace(/^\|/,'').replace(/\|\s*$/,'').split('|').map(c=>c.trim());   // empty cells stay in place
+      const type=this.evalType(cells[0]); if (!type) continue;                              // header / legacy rows
+      const opts=cells.slice(2,7).map(c=>({pass:/^[✓✔]/.test(c),text:c.replace(/^[✓✔]\s*/,'')})).filter(o=>o.text);
+      rows.push({type,description:cells[1]||'',opts,rag:cells[7]||'',target:pct(cells[8])??0.7,weight:parseFloat(cells[9])||1});
+    }
+    return rows;
+  },
+  /** One typed row → {score 0..1, probs, label, ...}. Switch: decisions aLoRA (probabilities); otherwise one discrete answer. */
+  async scoreEvalRow(row,V) {
+    const opts=row.type==='yesno'
+      ? [{key:'1',text:row.opts[0]?.text||'Yes'},{key:'2',text:row.opts[1]?.text||'No'}]
+      : row.opts.map((o,i)=>({key:String(i+1),text:o.text,pass:o.pass}));
+    if (opts.length<2) throw new Error('minstens 2 niveaus/opties nodig bij: '+row.description);
+    if (row.type==='choice'&&!row.opts.some(o=>o.pass)) throw new Error('markeer minstens één optie met ✓ bij: '+row.description);
+    V.row_q=row.description; opts.forEach((o,i)=>{ V['o'+i]=o.text; });
+    let probs={};
+    if (State.switch) {
+      await Flow._decide({id:'score',adapter:'decisions',slot:'main',state:'TEXT TO EVALUATE:\n${scope_text}${ref_context}',question:'${row_q}',
+        options:opts.map((o,i)=>({key:o.key,text:'${o'+i+'}'}))},V,{});
+      probs=V.score_probs||{};
+    } else {
+      const L='ABCDE';
+      const out=await Backends.inferJSON([{role:'system',content:'You are a strict document quality evaluator. Be honest and critical.'},
+        {role:'user',content:(V.ref_context?V.ref_context.trim()+'\n\n':'')+'TEXT TO EVALUATE:\n'+V.scope_text+'\n\nQUESTION: '+row.description+'\n\nOptions:\n'+
+          opts.map((o,i)=>L[i]+': '+o.text).join('\n')+'\n\nReply with exactly one option label.'}],6,0);
+      const k=L.indexOf((String(out).trim().match(/[A-E]/i)||[''])[0].toUpperCase());
+      if (k>=0&&k<opts.length) probs[opts[k].key]=1;
+    }
+    const sum=opts.reduce((a,o)=>a+(probs[o.key]||0),0);
+    if (!(sum>0)) return {score:null,probs:{},label:''};
+    const p=o=>(probs[o.key]||0)/sum;
+    let score;
+    if (row.type==='yesno') score=p(opts[0]);
+    else if (row.type==='choice') score=opts.reduce((a,o)=>a+(o.pass?p(o):0),0);
+    else score=(opts.reduce((a,o,i)=>a+(i+1)*p(o),0)-1)/(opts.length-1);
+    const best=opts.reduce((a,o)=>p(o)>p(a)?o:a,opts[0]);
+    return {score,probs:Object.fromEntries(opts.map(o=>[o.key,p(o)])),label:best.text};
+  },
+  async evalReason(row,V,label) {
+    try {
+      V.verdict=label;
+      const step=State.switch
+        ? {id:'reason',continue:'score',slot:'main',mode:'complete',max_tokens:90,temperature:0.1,
+           then:'The chosen option is "${verdict}" for the question "${row_q}". Write ONE sentence (max 35 words) that explains what in the text causes this, citing concrete evidence. Write in the language of the TEXT TO EVALUATE. Output only the sentence.'}
+        : {id:'reason',role:'chat',mode:'complete',max_tokens:90,temperature:0.1,system:'You are a strict document quality evaluator.',
+           user:'The text below was rated "${verdict}" on the question "${row_q}". Write ONE sentence (max 35 words) with concrete evidence from the text. Output only the sentence.\n\nTEXT:\n${scope_text}'};
+      return String(await Flow._infer(step,V,{})).replace(/\s+/g,' ').trim();
+    } catch(e) { console.warn('[eval] reason failed:',e); return ''; }
+  },
+  async runTypedEval(blocks,blockIdx,onChunk,rows0) {
+    const block=blocks[blockIdx];
+    const sub=t=>this.substitute(t,blocks,blockIdx);
+    const rows=rows0.map(r=>({...r,description:sub(r.description),rag:sub(r.rag),opts:r.opts.map(o=>({...o,text:sub(o.text)}))}));
+    const scopeText=this.getEvalScope(blocks,blockIdx);
+    if (!scopeText) throw new Error('Geen tekst boven dit evaluatieblok gevonden.');
+    let targetKey=null;
+    for (let j=blockIdx-1;j>=0&&blocks[j].type!=='evaluation';j--) if (blocks[j].type==='prompt') { targetKey=blocks[j].key; break; }
+    const truncated=!!(targetKey&&State.docNotes[targetKey]?.truncated);
+    const refCache=new Map(), done=[];
+    const P=x=>Math.round(x*100)+'%';
+    const render=()=>{
+      const sc=done.filter(r=>r.score!==null), ws=sc.reduce((a,r)=>a+r.weight,0)||1;
+      return this.evalMarkdown(done,sc.reduce((a,r)=>a+r.weight*r.score,0)/ws,sc.reduce((a,r)=>a+r.weight*r.target,0)/ws);
+    };
+    for (const row of rows) {
+      if (State.docStopRequested) break;
+      document.getElementById('doc-status').textContent='⏳ Evaluatie '+(done.length+1)+'/'+rows.length+': '+row.description.slice(0,50);
+      const V={scope_text:scopeText,ref_context:'',thes_terms:Pipeline.thesTerms(),example_doc:Pipeline.exampleDoc()};
+      const r={type:row.type,description:row.description,target:row.target,weight:row.weight,rag:!!row.rag,score:null,reason:'',label:'',probs:{}};
+      const finishing=/compleet|complete|volledig|afgerond|\baf\b|afgekapt|cut off|finish/i.test(row.description+' '+row.opts.map(o=>o.text).join(' '));
+      try {
+        if (truncated&&row.type==='yesno'&&finishing) { r.score=0; r.reason='De uitvoer is afgekapt (maximaal aantal tokens bereikt).'; }
+        else {
+          if (row.rag&&State.chunks.length) {
+            if (!refCache.has(row.rag)) refCache.set(row.rag,(await Flow.run('doc_eval_ref',{row_query:row.rag,thes_terms:V.thes_terms,example_doc:V.example_doc})).vars.ref_context||'');
+            V.ref_context=refCache.get(row.rag);
+          }
+          const sc=await this.scoreEvalRow(row,V);
+          Object.assign(r,sc);
+          if (r.score!==null&&r.score<row.target) r.reason=await this.evalReason(row,V,sc.label);
+        }
+      } catch(e) { r.error=e.message; console.warn('[eval] row failed:',e); }
+      r.pass=r.score!==null&&r.score>=r.target;
+      console.log('[eval] '+r.type+' | '+row.description.slice(0,50)+' | '+(r.score===null?'?':P(r.score))+' (doel '+P(r.target)+', w '+r.weight+')',r.probs);
+      done.push(r);
+      if (onChunk) onChunk(render());
+    }
+    if (!done.length) throw new Error('Geen rubrieken uitgevoerd (gestopt?).');
+    const sc=done.filter(r=>r.score!==null), ws=sc.reduce((a,r)=>a+r.weight,0)||1;
+    const total=sc.reduce((a,r)=>a+r.weight*r.score,0)/ws, targetAvg=sc.reduce((a,r)=>a+r.weight*r.target,0)/ws;
+    const ev={targetKey,total,targetAvg,pass:total>=targetAvg,rows:done,switch:!!State.switch};
+    const outputText=this.evalMarkdown(done,total,targetAvg)+(State.switch?'':'\n\n*Zonder Granite Switch: één discrete keuze per criterium, geen kansverdeling.*');
+    return {outputText,eval:ev,
+      provenance:{type:'eval',model:State.chatModel||'Browser AI',embedModel:'',chunkIds:[],inputWords:wordCount(scopeText),outputWords:wordCount(outputText),stars:P(total)}};
+  },
+  evalMarkdown(rows,total,targetAvg) {
+    const P=x=>Math.round(x*100)+'%', esc=t=>String(t||'').replace(/\|/g,'/').replace(/\n/g,' ');
+    const typeName={judge:'Judge',yesno:'Yes/no',scale:'Scale',choice:'Choice'};
+    let md='| Criterium | Type | Score | Doel | Gewicht | |\n|---|---|---|---|---|---|\n'+
+      rows.map(r=>'| '+esc(r.description)+(r.rag?' 🔍':'')+' | '+typeName[r.type]+' | '+(r.score===null?'?':P(r.score))+' | '+P(r.target)+' | '+r.weight+' | '+(r.score===null?'⚠️':r.pass?'✓':'✗')+' |').join('\n');
+    md+='\n\n**Totaal: '+P(total)+' (doel '+P(targetAvg)+') '+(total>=targetAvg?'✓':'✗')+'**';
+    const bad=rows.filter(r=>r.score!==null&&!r.pass||r.error);
+    if (bad.length) md+='\n\n'+bad.map(r=>'- '+(r.error?'⚠️ ':'✗ ')+esc(r.description)+(r.error?' — '+esc(r.error):' — '+P(r.score)+(r.reason?': '+esc(r.reason):''))).join('\n');
+    return md;
   },
 
   /** Parse evaluation block content → array of rubric rows */
@@ -3606,8 +3829,10 @@ const Doc = {
     const used=Pipeline.contextChunks(V.chunks,ctxStep).map(c=>({
       label:c.docName+' #'+c.id.split('_').at(-1), text:c.text, cited:chunkIds.includes(c.id),
     }));
+    if (V.truncated) warnings.push('✂️ De uitvoer is afgekapt: het maximale aantal tokens is bereikt, de tekst is niet compleet.');
     return {
-      outputText, notes:{warnings,chunks:used,checks:V.checks},
+      outputText, notes:{warnings,chunks:used,checks:V.checks,truncated:!!V.truncated},
+      snap:{question,context:V.context||''},
       provenance:{type:'prompt',model:State.chatModel||'Browser AI',embedModel:State.embedModel,
         chunkIds,inputWords:wordCount(question+' '+V.context),outputWords:wordCount(outputText),checks:V.checks},
     };
@@ -3615,6 +3840,11 @@ const Doc = {
 
   /** Run an evaluation block: one LLM call per rubric row */
   async runEvalBlock(blocks, blockIdx, onChunk) {
+    const typed=this.parseEvalTable(blocks[blockIdx].content);
+    if (typed.length) return this.runTypedEval(blocks,blockIdx,onChunk,typed);
+    return this.runEvalBlockLegacy(blocks,blockIdx,onChunk);   // old ★1/★2/★3 tables
+  },
+  async runEvalBlockLegacy(blocks, blockIdx, onChunk) {
     const block = blocks[blockIdx];
     const rows=this.parseEvalRows(block.content);
     if (!rows.length) throw new Error('Geen geldige rubrieken gevonden.');
@@ -3695,6 +3925,8 @@ const Doc = {
 
       State.docResults[block.key]=result.outputText;
       if (result.notes) State.docNotes[block.key]=result.notes; else delete State.docNotes[block.key];
+      if (result.eval) State.docEvals[block.key]=result.eval; else delete State.docEvals[block.key];
+      if (block.type==='prompt') { delete State.docHallu[block.key]; if (result.snap) State.docSnaps[block.key]=result.snap; }
       State.docProvenance.push(result.provenance);
       this.saveResults();
 
@@ -3704,6 +3936,7 @@ const Doc = {
       preview.scrollTop=scrollTop;
 
       document.getElementById('doc-status').textContent='✓ Blok '+(blockIdx+1)+' klaar';
+      return true;
 
     } catch(e) {
       streamEl.className='';
@@ -3711,7 +3944,44 @@ const Doc = {
       streamEl.textContent='❌ Fout: '+e.message;
       document.getElementById('doc-status').textContent='❌ Fout in blok '+(blockIdx+1);
       console.error('[Doc] Block error:',e);
+      return false;
     }
+  },
+
+  /** Hallucination LoRA over ALL chunks of one prompt block's last run (user-triggered, or automatic with the "Alles uitvoeren" checkbox). */
+  async runHalluByIndex(blockIdx,quiet) {
+    const st=document.getElementById('doc-status');
+    const blocks=this.parseBlocks(document.getElementById('doc-source').value);
+    const block=blocks[blockIdx];
+    if (!block||block.type!=='prompt') return false;
+    try {
+      const answer=State.docResults[block.key], snap=State.docSnaps[block.key];
+      if (!answer) throw new Error('voer het blok eerst uit.');
+      if (!snap) throw new Error('de bronnen van de laatste run zijn niet meer beschikbaar — voer het blok opnieuw uit.');
+      if (!State.switch) throw new Error('vereist Granite Switch (hallucination_detection LoRA).');
+      st.textContent='🔎 Blok '+(blockIdx+1)+': hallucinatiecontrole…';
+      const h=await Pipeline.deepCheck({question:snap.question,standalone:snap.question,context:snap.context,answer});
+      State.docHallu[block.key]={light:h.light,counts:h.counts,items:h.items};
+      this.saveResults();
+      const preview=document.getElementById('doc-preview'), top=preview.scrollTop;
+      this.render(document.getElementById('doc-source').value); preview.scrollTop=top;
+      st.textContent='✓ Blok '+(blockIdx+1)+': hallucinatiecontrole klaar';
+      return true;
+    } catch(e) {
+      st.textContent='⚠️ Hallucinatiecontrole blok '+(blockIdx+1)+': '+e.message;
+      console.warn('[Doc] hallu:',e);
+      return false;
+    }
+  },
+  renderHallu(h) {
+    if (!h) return '';
+    const col={faithful:'#2e7d32',partial:'#f9a825',unfaithful:'#c62828',na:'#757575'}, c=h.counts||{};
+    const head='🔎 Hallucinatiecontrole: '+(c.faithful||0)+' onderbouwd · '+(c.partial||0)+' gedeeltelijk · '+(c.unfaithful||0)+' niet onderbouwd'+(c.na?' · '+c.na+' n.v.t.':'');
+    if (!h.items?.length) return '<div style="margin:.4rem 0;font-size:.82rem">'+head+' — geen bruikbaar resultaat (zie console).</div>';
+    const order={unfaithful:0,partial:1,faithful:2,na:3};
+    const items=[...h.items].sort((a,b)=>(order[a.faith]??4)-(order[b.faith]??4)||a.idx-b.idx);
+    return '<details style="margin:.4rem 0;font-size:.82rem" '+(c.unfaithful||c.partial?'open':'')+'><summary style="cursor:pointer">'+head+'</summary>'+
+      items.map(i=>'<div style="margin:2px 0;padding-left:8px;border-left:4px solid '+(col[i.faith]||'#999')+'">'+escapeHtml(i.text||'')+' — <em>'+escapeHtml(i.faith)+'</em>'+(i.why?': '+escapeHtml(i.why):'')+'</div>').join('')+'</details>';
   },
 
   /**
@@ -3726,10 +3996,13 @@ const Doc = {
 
     const source=document.getElementById('doc-source').value;
     const blocks=this.parseBlocks(source);
+    const auto=!!document.getElementById('doc-auto-hallu')?.checked;
     for (let i=0;i<blocks.length;i++) {
       if (State.docStopRequested) break;
-      if (blocks[i].type==='prompt'||blocks[i].type==='evaluation')
-        await this.runBlockByIndex(i);
+      if (blocks[i].type==='prompt'||blocks[i].type==='evaluation') {
+        const ok=await this.runBlockByIndex(i);
+        if (ok&&blocks[i].type==='prompt'&&auto&&!State.docStopRequested) await this.runHalluByIndex(i,true);
+      }
     }
 
     State.docRunning=false;
@@ -3752,6 +4025,7 @@ const Doc = {
           <div class="doc-block-header">
             <span class="doc-block-type">✍️ Prompt <code>$${promptNo}${as?' · $'+escapeHtml(as):''}</code></span>
             <button class="doc-run-btn" data-run="${i}">▶ Uitvoeren</button>
+            <button class="doc-run-btn" data-hallu="${i}" style="background:#555" title="Hallucination-detection LoRA over alle chunks (Granite Switch)">🔎 Hallucinatiecontrole</button>
           </div>
           <div class="doc-block-body">
             <div class="doc-block-field"><strong>Ophalen:</strong> ${escapeHtml(retrieval||'(leeg)')}</div>
@@ -3760,9 +4034,10 @@ const Doc = {
           </div>
         </div>`;
         const result=State.docResults[block.key];
-        if (result) html+=`<div class="doc-output">${this.wikifyHtml(typeof marked!=='undefined'?marked.parse(result):result)}</div>`+this.renderNotes(State.docNotes[block.key]);
+        if (result) html+=`<div class="doc-output">${this.wikifyHtml(typeof marked!=='undefined'?marked.parse(result):result)}</div>`+this.renderNotes(State.docNotes[block.key])+this.renderHallu(State.docHallu[block.key]);
       } else if (block.type==='evaluation') {
-        const rows=this.parseEvalRows(block.content);
+        const typedRows=this.parseEvalTable(block.content);
+        const rows=typedRows.length?typedRows.map(r=>({title:({judge:'Judge',yesno:'Yes/no',scale:'Scale',choice:'Choice'})[r.type],description:r.description+' · doel '+Math.round(r.target*100)+'% · gewicht '+r.weight,doRag:!!r.rag})):this.parseEvalRows(block.content);
         html+=`<div class="doc-block" data-block="${i}">
           <div class="doc-block-header">
             <span class="doc-block-type">📊 Evaluatie — ${rows.length} criteria</span>
@@ -3831,6 +4106,7 @@ const Doc = {
           out+='\n\n```output\n'+result.trim()+'\n```\n';
           const n=State.docNotes[block.key];
           (n?.warnings||[]).forEach(w=>{ out+='\n> ⚠️ '+w+'\n'; });
+          const hl=State.docHallu[block.key]; if (hl) out+='\n> 🔎 '+this.halluSummary(hl).replace(/\n/g,'\n> ')+'\n';
           if (n?.chunks?.length) out+='\nGebruikte chunks: '+n.chunks.map((c,i)=>(i+1)+'. '+c.label+(c.cited?' ✓':'')).join(' · ')+'\n';
         }
       }
@@ -3854,6 +4130,8 @@ const Doc = {
       localStorage.setItem(this.RESULTS_KEY, JSON.stringify(State.docResults));
       localStorage.setItem(this.PROVENANCE_KEY, JSON.stringify(State.docProvenance));
       localStorage.setItem(this.NOTES_KEY, JSON.stringify(State.docNotes));
+      localStorage.setItem(this.RESULTS_KEY+'.evals', JSON.stringify(State.docEvals));
+      localStorage.setItem(this.RESULTS_KEY+'.hallu', JSON.stringify(State.docHallu));
     } catch {}
   },
   loadResults() {
@@ -3861,12 +4139,14 @@ const Doc = {
       State.docResults = JSON.parse(localStorage.getItem(this.RESULTS_KEY) || '{}');
       State.docProvenance = JSON.parse(localStorage.getItem(this.PROVENANCE_KEY) || '[]');
       State.docNotes = JSON.parse(localStorage.getItem(this.NOTES_KEY) || '{}');
-    } catch { State.docResults = {}; State.docProvenance = []; State.docNotes = {}; }
+      State.docEvals = JSON.parse(localStorage.getItem(this.RESULTS_KEY+'.evals') || '{}');
+      State.docHallu = JSON.parse(localStorage.getItem(this.RESULTS_KEY+'.hallu') || '{}');
+    } catch { State.docResults = {}; State.docProvenance = []; State.docNotes = {}; State.docEvals = {}; State.docHallu = {}; }
   },
   /** Clear results + provenance — called when a new template.md is uploaded */
   resetResults() {
-    State.docResults = {}; State.docProvenance = []; State.docNotes = {};
-    try { localStorage.removeItem(this.RESULTS_KEY); localStorage.removeItem(this.PROVENANCE_KEY); localStorage.removeItem(this.NOTES_KEY); } catch {}
+    State.docResults = {}; State.docProvenance = []; State.docNotes = {}; State.docEvals = {}; State.docHallu = {}; State.docSnaps = {};
+    try { localStorage.removeItem(this.RESULTS_KEY+'.evals'); localStorage.removeItem(this.RESULTS_KEY+'.hallu'); localStorage.removeItem(this.RESULTS_KEY); localStorage.removeItem(this.PROVENANCE_KEY); localStorage.removeItem(this.NOTES_KEY); } catch {}
   },
 };
 
@@ -4213,6 +4493,8 @@ document.getElementById('doc-source').addEventListener('input', () => {
 
 // Event delegation for doc run buttons
 document.getElementById('doc-preview').addEventListener('click', async e => {
+  const hb=e.target.closest('[data-hallu]');
+  if (hb&&!hb.disabled&&!State.docRunning) { hb.disabled=true; await Doc.runHalluByIndex(parseInt(hb.dataset.hallu)); return; }
   const btn=e.target.closest('[data-run]');
   if (!btn||btn.disabled||State.docRunning) return;
   const idx=parseInt(btn.dataset.run);
